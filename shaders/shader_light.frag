@@ -8,7 +8,7 @@ in vec4 vColor;
 
 out vec4 color;
 
-const int MAX_POINT_LIGHTS = 4;
+const int MAX_POINT_LIGHTS = 8;
 const int MAX_SPOT_LIGHTS = 4;
 
 struct Light
@@ -58,6 +58,8 @@ uniform Material material;
 
 uniform vec3 eyePosition;
 uniform int noLighting;
+uniform float fogDensity;
+uniform vec3 fogColor;
 
 vec4 CalcLightByDirection(Light light, vec3 direction)
 {
@@ -140,11 +142,15 @@ void main()
 {
 	vec4 texColor = texture(theTexture, TexCoord);
 	if (noLighting == 1) {
-		color = vec4(texColor.rgb, texColor.a * vColor.a);
+		color = vec4(texColor.rgb * vColor.rgb, texColor.a * vColor.a);
 	} else {
 		vec4 finalcolor = CalcDirectionalLight();
 		finalcolor += CalcPointLights();
 		finalcolor += CalcSpotLights();
 		color = texColor * vColor * finalcolor;
 	}
+
+	// niebla exponencial (fogDensity = 0 la desactiva)
+	float fogFactor = exp(-fogDensity * length(eyePosition - FragPos));
+	color.rgb = mix(fogColor, color.rgb, clamp(fogFactor, 0.0, 1.0));
 }

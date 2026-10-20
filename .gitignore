@@ -13,3 +13,7 @@ Release/
 .claude/
 CLAUDE.md
 CLAUDE.local.md
+
+# HDRI original (24 MB): se sube solo el skybox convertido en Textures/Skybox
+Textures/HDRI/
+

@@ -14,9 +14,16 @@ class Model
 public:
 	Model();
 
-	void LoadModel(const std::string& fileName);
+	// cutBelowY: descarta los triangulos que quedan ENTEROS por debajo de esa altura (en unidades del modelo).
+	// Sirve para quitar bases/losas negras que traen algunos .glb.
+	void LoadModel(const std::string& fileName, float cutBelowY = -1e30f);
 	void RenderModel(GLuint colorLocation = 0);
 	void ClearModel();
+
+	// Caja envolvente en el espacio del modelo (ya con las transformaciones de nodos aplicadas)
+	glm::vec3 GetBoundsMin() const { return boundsMin; }
+	glm::vec3 GetBoundsMax() const { return boundsMax; }
+	bool IsLoaded() const { return !MeshList.empty(); }
 
 	~Model();
 
@@ -29,5 +36,8 @@ private:
 	std::vector<unsigned int>meshTotex;
 	std::vector<glm::vec3>materialColors;
 	std::string modelDir;
+	float cutBelowY = -1e30f;
+	glm::vec3 boundsMin = glm::vec3(1e30f);
+	glm::vec3 boundsMax = glm::vec3(-1e30f);
 };
 

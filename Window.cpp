@@ -51,7 +51,7 @@ int Window::Initialise()
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
 	//CREAR VENTANA
-	mainWindow = glfwCreateWindow(width, height, "ProyectoFinal - CGIHM", NULL, NULL);
+	mainWindow = glfwCreateWindow(width, height, "Gion Matsuri - Noches de Yoiyama", NULL, NULL);
 
 	if (!mainWindow)
 	{

@@ -8,10 +8,11 @@ Model::Model()
 {
 }
 
-void Model::LoadModel(const std::string & fileName)
+void Model::LoadModel(const std::string & fileName, float cutBelowYArg)
 {
+	cutBelowY = cutBelowYArg;
 	Assimp::Importer importer;
-	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices);
+	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_PreTransformVertices);
 	if (!scene)
 	{
 		printf("Fall en cargar el modelo: %s \n", fileName.c_str());
@@ -104,11 +105,20 @@ void Model::LoadMesh(aiMesh * mesh, const aiScene * scene)
 	for (unsigned int i = 0; i < mesh->mNumFaces; i++)
 	{
 		aiFace face = mesh->mFaces[i];
+		// descartar triangulos completamente por debajo de cutBelowY (bases/losas) y no contarlos en la caja envolvente
+		bool allBelow = face.mNumIndices > 0;
+		for (unsigned int j = 0; j < face.mNumIndices; j++)
+			if (mesh->mVertices[face.mIndices[j]].y >= cutBelowY) { allBelow = false; break; }
+		if (allBelow) continue;
 		for (unsigned int j = 0; j < face.mNumIndices; j++)
 		{
 			indices.push_back(face.mIndices[j]);
+			const aiVector3D& v = mesh->mVertices[face.mIndices[j]];
+			boundsMin = glm::min(boundsMin, glm::vec3(v.x, v.y, v.z));
+			boundsMax = glm::max(boundsMax, glm::vec3(v.x, v.y, v.z));
 		}
 	}
+	if (indices.empty()) return; // la malla entera era una base descartada
 
 	Mesh* newMesh = new Mesh();
 	newMesh->CreateMesh(&vertices[0], &indices[0], vertices.size(), indices.size());

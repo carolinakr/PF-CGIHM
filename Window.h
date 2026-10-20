@@ -19,6 +19,7 @@ public:
 	GLfloat getmuevepez() { return muevepez; }
 	bool getShouldClose() {
 		return  glfwWindowShouldClose(mainWindow);}
+	void setShouldClose(bool v) { glfwSetWindowShouldClose(mainWindow, v ? GLFW_TRUE : GLFW_FALSE); }
 	bool* getsKeys() { return keys; }
 	void swapBuffers() { return glfwSwapBuffers(mainWindow); }
 	

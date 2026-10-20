@@ -1,15 +1,14 @@
 /*
 Proyecto Final - CGIHM
-Base limpia derivada de ProyectoTeoria: toda la logica (camara, luces, ciclo dia/noche,
-keyframes, animacion procedural, jerarquia de modelos, skybox, audio) sin modelos ni texturas.
-La escena de abajo usa solo geometria procedural como ejemplo; reemplazala por la tuya.
+Gion Matsuri: noches de Yoiyama (Equipo 14). Recorrido nocturno por una calle de Kioto.
+Base: motor + logica de ProyectoTeoria (camara, luces, skybox, keyframes, audio).
 
 Controles:
-  W A S D + mouse : camara
-  1 - 4           : camaras predefinidas (editar CAM_PRESETS)
-  7               : inicia/reinicia el ciclo dia/noche
-  F               : enciende/apaga la maquina giratoria (arranque lento + inercia al apagar)
-  C               : camina / detiene la figura procedural
+  W A S D + mouse : caminar (limitado a la calle, a la altura de los ojos)
+  1 - 3           : puntos de vista (entrada / centro / fondo)
+  V               : camara libre (sin limites)
+  L               : linterna
+  M               : muestra/oculta los numeros de los modelos y el muestrario de texturas
   ESC             : salir
 */
 
@@ -22,6 +21,9 @@ Controles:
 #include <vector>
 #include <string>
 #include <math.h>
+#include <random>
+#include <map>
+#include <algorithm>
 
 #include "miniaudio.h"
 
@@ -79,16 +81,12 @@ static const char* fShader = "shaders/shader_light.frag";
 
 ma_engine audioEngine;
 
-// Ciclo dia/noche
-static const float CYCLE_DURATION = 60.0f; // segundos por dia completo
-float cycleElapsed = 0.0f;                 // 0 = mediodia (cos(0) = 1)
-bool  cycleRunning = false;
-
 // Indices de meshes procedurales (se asignan en CreateObjects)
 int MESH_CAJA     = -1; // caja unitaria [0,1]^3
 int MESH_CILINDRO = -1; // cilindro radio 1, altura 1 (solo lateral)
 int MESH_PISO     = -1; // quad horizontal con UVs repetidas
 int MESH_PIRAMIDE = -1; // piramide con normales promediadas
+int MESH_SUELO   = -1; // suelo grande alrededor de la calle
 int MESH_QUAD     = -1; // quad vertical unitario [0,1] (flyers/billboards)
 
 // ============================================================
@@ -157,10 +155,10 @@ int MakeCylinder(int sectors)
 		float x0 = cosf(a0), z0 = sinf(a0);
 		float x1 = cosf(a1), z1 = sinf(a1);
 		float u0 = (float)i / sectors, u1 = (float)(i + 1) / sectors;
-		verts.insert(verts.end(), { x0, 0.0f, z0,  u0, 0.0f,  x0, 0.0f, z0 });
-		verts.insert(verts.end(), { x1, 0.0f, z1,  u1, 0.0f,  x1, 0.0f, z1 });
-		verts.insert(verts.end(), { x1, 1.0f, z1,  u1, 1.0f,  x1, 0.0f, z1 });
-		verts.insert(verts.end(), { x0, 1.0f, z0,  u0, 1.0f,  x0, 0.0f, z0 });
+		verts.insert(verts.end(), { x0, 0.0f, z0,  u0, 0.0f,  -x0, 0.0f, -z0 });
+		verts.insert(verts.end(), { x1, 0.0f, z1,  u1, 0.0f,  -x1, 0.0f, -z1 });
+		verts.insert(verts.end(), { x1, 1.0f, z1,  u1, 1.0f,  -x1, 0.0f, -z1 });
+		verts.insert(verts.end(), { x0, 1.0f, z0,  u0, 1.0f,  -x0, 0.0f, -z0 });
 		unsigned b = i * 4;
 		inds.insert(inds.end(), { b, b + 2, b + 1,  b, b + 3, b + 2 });
 	}
@@ -206,6 +204,8 @@ int MakeBox()
 		1,1,0,  1,1,  0,1,0,
 		0,1,0,  0,1,  0,1,0,
 	};
+	// Convencion del shader: la normal apunta hacia ADENTRO de la superficie (igual que Model::LoadMesh)
+	for (int i = 0; i < 24; i++) { v[i * 8 + 5] = -v[i * 8 + 5]; v[i * 8 + 6] = -v[i * 8 + 6]; v[i * 8 + 7] = -v[i * 8 + 7]; }
 	unsigned int idx[] = {
 		 0, 1, 2,  0, 2, 3,
 		 4, 5, 6,  4, 6, 7,
@@ -225,20 +225,37 @@ void CreateObjects()
 	MESH_CAJA     = MakeBox();
 	MESH_CILINDRO = MakeCylinder(18);
 
-	// Piso horizontal 40x40 centrado en el origen. UVs de 0 a 20 (la textura se repite).
+	// Piso de la calle: 10 m (X) x 60 m (Z); UV = metros / STONE_TILE (1 repeticion cada 2 m)
 	{
+		const float W = 5.0f, Z0 = -30.0f, Z1 = 30.0f, STONE_TILE = 2.0f;
 		unsigned int idx[] = { 0, 2, 1,  1, 2, 3 };
 		GLfloat v[] = {
-			// x      y     z       u      v      nx    ny    nz
-			-20.0f, 0.0f, -20.0f,   0.0f,  0.0f,  0.0f, 1.0f, 0.0f,
-			 20.0f, 0.0f, -20.0f,  20.0f,  0.0f,  0.0f, 1.0f, 0.0f,
-			-20.0f, 0.0f,  20.0f,   0.0f, 20.0f,  0.0f, 1.0f, 0.0f,
-			 20.0f, 0.0f,  20.0f,  20.0f, 20.0f,  0.0f, 1.0f, 0.0f,
+			// x    y     z      u                     v                        nx    ny    nz
+			-W, 0.0f, Z0,   0.0f,                 0.0f,                    0.0f, -1.0f, 0.0f,
+			 W, 0.0f, Z0,   2 * W / STONE_TILE,   0.0f,                    0.0f, -1.0f, 0.0f,
+			-W, 0.0f, Z1,   0.0f,                 (Z1 - Z0) / STONE_TILE, 0.0f, -1.0f, 0.0f,
+			 W, 0.0f, Z1,   2 * W / STONE_TILE,   (Z1 - Z0) / STONE_TILE, 0.0f, -1.0f, 0.0f,
 		};
 		Mesh* m = new Mesh();
 		m->CreateMesh(v, idx, 32, 6);
 		meshList.push_back(m);
 		MESH_PISO = (int)meshList.size() - 1;
+	}
+
+	// Suelo grande alrededor de la calle (no transitable): 300 x 300 m, 1 repeticion cada 2 m
+	{
+		const float R = 150.0f, TILE = 2.0f;
+		unsigned int idx[] = { 0, 2, 1,  1, 2, 3 };
+		GLfloat v[] = {
+			-R, 0.0f, -R,   0.0f,          0.0f,          0.0f, -1.0f, 0.0f,
+			 R, 0.0f, -R,   2 * R / TILE,  0.0f,          0.0f, -1.0f, 0.0f,
+			-R, 0.0f,  R,   0.0f,          2 * R / TILE,  0.0f, -1.0f, 0.0f,
+			 R, 0.0f,  R,   2 * R / TILE,  2 * R / TILE,  0.0f, -1.0f, 0.0f,
+		};
+		Mesh* m = new Mesh();
+		m->CreateMesh(v, idx, 32, 6);
+		meshList.push_back(m);
+		MESH_SUELO = (int)meshList.size() - 1;
 	}
 
 	// Piramide: normales en 0 y luego promediadas con calcAverageNormals
@@ -261,10 +278,10 @@ void CreateObjects()
 	{
 		unsigned int idx[] = { 0, 1, 2,  0, 2, 3 };
 		GLfloat v[] = {
-			0.0f, 0.0f, 0.0f,  0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
-			1.0f, 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 0.0f, 1.0f,
-			1.0f, 1.0f, 0.0f,  1.0f, 1.0f,  0.0f, 0.0f, 1.0f,
-			0.0f, 1.0f, 0.0f,  0.0f, 1.0f,  0.0f, 0.0f, 1.0f,
+			0.0f, 0.0f, 0.0f,  0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+			1.0f, 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+			1.0f, 1.0f, 0.0f,  1.0f, 1.0f,  0.0f, 0.0f, -1.0f,
+			0.0f, 1.0f, 0.0f,  0.0f, 1.0f,  0.0f, 0.0f, -1.0f,
 		};
 		Mesh* m = new Mesh();
 		m->CreateMesh(v, idx, 32, 6);
@@ -338,103 +355,305 @@ private:
 	int idx, cur;
 };
 
-// Ejemplo: orbita de un "dron" - variables { x, y, z, yaw }
-KeyframePath dronPath;
-float dron_helixAngle = 0.0f;
-
-void InitAnimations()
-{
-	dronPath = KeyframePath(
-		{
-			//   x      y     z     yaw
-			{  0.0f,  6.0f,  12.0f,   0.0f },
-			{  9.0f,  8.0f,   9.0f,  45.0f },
-			{ 12.0f,  7.0f,   0.0f,  90.0f },
-			{  9.0f,  9.0f,  -9.0f, 135.0f },
-			{  0.0f,  7.0f, -12.0f, 180.0f },
-			{ -9.0f,  8.0f,  -9.0f, 225.0f },
-			{-12.0f,  7.0f,   0.0f, 270.0f },
-			{ -9.0f,  9.0f,   9.0f, 315.0f },
-			{  0.0f,  6.0f,  12.0f, 360.0f }, // = KF0, cierra el loop
-		},
-		{ 200, 200, 200, 200, 200, 200, 200, 200 });
-}
-
 // ============================================================
-//  ANIMACION PROCEDURAL (caminar con sinf) y MAQUINA CON INERCIA
+//  CALLE DE YOIYAMA  (1 unidad = 1 m)
+//  Calle peatonal de 10 m x 60 m a lo largo de Z; el usuario entra por +Z mirando a -Z.
 // ============================================================
-bool  walkerWalking   = true;
-float walker_cycle    = 0.0f;   // fase acumulada del paso
-float walker_posZ     = 8.0f;
-float walker_dir      = 1.0f;   // +1 avanza hacia -Z, -1 hacia +Z
+const float STREET_HALF_W = 5.0f;     // ancho 10 m
+const float STREET_Z_MIN  = -30.0f;   // fondo (fuegos artificiales)
+const float STREET_Z_MAX  =  30.0f;   // entrada (torii)
+const float EYE_HEIGHT    = 1.7f;
+const float WALK_MARGIN   = 0.4f;     // distancia minima a las fachadas / extremos
 
-// Maquina giratoria: vibra al encender, gira tras un retardo y se frena con inercia al apagar
-bool  machineOn           = false;
-bool  machineStopping     = false;
-float machineStartTime    = 0.0f;
-float machineStopTime     = 0.0f;
-float machineAngle        = 0.0f;
-float machinePulse        = 1.0f;  // escala pulsante (llama/vapor)
-float machineVib          = 0.0f;  // vibracion en grados
-const float MACHINE_SPIN_DELAY    = 5.0f;   // seg antes de que empiece a girar
-const float MACHINE_SPIN_DEG_SECS = 90.0f;  // velocidad maxima de giro
-const float MACHINE_DECEL_SECS    = 2.5f;   // tiempo que tarda en frenar
-
-void UpdateMachine(bool togglePressed, float dt)
-{
-	float now = (float)glfwGetTime();
-	if (togglePressed) {
-		machineOn = !machineOn;
-		if (machineOn) {
-			machineStartTime = now;
-			machineStopping  = false;
-		}
-		else if (now - machineStartTime > MACHINE_SPIN_DELAY) {
-			machineStopping = true;     // ya estaba girando: frena con inercia
-			machineStopTime = now;
-		}
-	}
-
-	if (machineOn) {
-		float t = now - machineStartTime;
-		machinePulse = 1.0f + 0.2f * sinf(t * 9.0f);
-		machineVib   = 8.0f * sinf(t * 13.0f);
-		if (t > MACHINE_SPIN_DELAY)
-			machineAngle += MACHINE_SPIN_DEG_SECS * dt;
-	}
-
-	if (machineStopping) {
-		float factor = 1.0f - ((now - machineStopTime) / MACHINE_DECEL_SECS);
-		if (factor > 0.0f)
-			machineAngle += MACHINE_SPIN_DEG_SECS * dt * factor;
-		else
-			machineStopping = false;
-	}
-}
-
-// ============================================================
-//  CAMARAS PREDEFINIDAS  (teclas 1-4)   Camera(pos, up, yaw, pitch, moveSpeed, turnSpeed)
-//  yaw: -90 mira a -Z, 90 a +Z, 0 a +X, 180 a -X
-// ============================================================
+// Camara: posiciones predefinidas (teclas 1-3). Camera(pos, up, yaw, pitch, moveSpeed, turnSpeed)
+// yaw: -90 mira a -Z, 90 a +Z, 0 a +X, 180 a -X
 struct CamPreset { glm::vec3 pos; float yaw, pitch; };
 const CamPreset CAM_PRESETS[3] = {
-	{ glm::vec3(0.0f, 1.7f, 14.0f),  -90.0f,  0.0f },   // 1: inicio
-	{ glm::vec3(10.0f, 4.0f, 10.0f), -135.0f, -15.0f },  // 2: esquina
-	{ glm::vec3(0.0f, 25.0f, 0.1f),  -90.0f, -89.0f },   // 3: vista cenital
+	{ glm::vec3(0.0f, EYE_HEIGHT, 28.0f),  -90.0f, 0.0f },  // 1: entrada
+	{ glm::vec3(0.0f, EYE_HEIGHT,  0.0f),  -90.0f, 0.0f },  // 2: centro de la calle
+	{ glm::vec3(0.0f, EYE_HEIGHT, -27.0f),  90.0f, 0.0f },  // 3: fondo, mirando a la entrada
 };
 const float CAM_MOVE_SPEED = 3.5f;
 const float CAM_TURN_SPEED = 0.25f;
+bool freeCamera = false; // tecla V: camara libre (sin limites de calle ni altura fija)
 
 void SetCameraPreset(const CamPreset& p)
 {
 	camera = Camera(p.pos, glm::vec3(0.0f, 1.0f, 0.0f), p.yaw, p.pitch, CAM_MOVE_SPEED, CAM_TURN_SPEED);
 }
 
+// Mantiene al usuario dentro de la calle y a la altura de los ojos
+void ConstrainCamera()
+{
+	if (freeCamera) return;
+	glm::vec3 p = camera.getCameraPosition();
+	p.x = glm::clamp(p.x, -STREET_HALF_W + WALK_MARGIN, STREET_HALF_W - WALK_MARGIN);
+	p.z = glm::clamp(p.z, STREET_Z_MIN + WALK_MARGIN, STREET_Z_MAX - WALK_MARGIN);
+	p.y = EYE_HEIGHT;
+	camera.setPosition(p);
+}
+
+// ============================================================
+//  AMBIENTE NOCTURNO  (el Yoiyama es de noche: no hay ciclo dia/noche)
+//  Skybox nocturno fijo + luz direccional de luna azul tenue; la escena se ilumina con los faroles.
+// ============================================================
+const glm::vec3 MOON_COLOR(0.42f, 0.52f, 0.95f);
+const glm::vec3 MOON_DIR(-0.30f, -0.80f, -0.50f);   // direccion en la que viaja la luz
+const float     MOON_AMBIENT = 0.20f;
+const float     MOON_DIFFUSE = 0.16f;
+const glm::vec3 SKY_TINT(1.0f, 1.0f, 1.15f);
+
+// Niebla exponencial: f = exp(-densidad * distancia). El color coincide con el horizonte del skybox.
+const float     FOG_DENSITY = 0.014f;
+const glm::vec3 FOG_COLOR(0.035f, 0.040f, 0.070f);
+
+// ============================================================
+//  FAROLES CHOCHIN  (animacion procedural)
+//  60 faroles en 12 cuerdas cruzando la calle. Cada uno pendula con
+//      theta(t) = 4 deg * sin(1.6 t + phi_i)      (phi_i aleatoria: no se mueven al unisono)
+//  y su luz parpadea con  I(t) = I0 * (0.92 + 0.08 * ruido(t)).
+//  Matriz de modelo: T(anclaje) * R(theta) * T(-L).
+//  Solo los MAX_POINT_LIGHTS (8) mas cercanos a la camara se envian al shader.
+// ============================================================
+struct Lantern {
+	glm::vec3 anchor;   // punto de la cuerda de donde cuelga
+	float phase;        // phi_i
+	float axisAngle;    // direccion (en XZ) del eje de giro
+};
+std::vector<Lantern> lanterns;
+
+const int   ROPE_COUNT        = 12;
+const int   LANTERNS_PER_ROPE = 5;
+const float ROPE_HEIGHT       = 4.5f;
+const float LANTERN_CORD_L    = 0.30f;  // L: cuerda hasta el farol
+const float LANTERN_BODY_H    = 0.45f;
+const float LANTERN_BODY_R    = 0.22f;
+const float LANTERN_SWING_DEG = 4.0f;
+const float LANTERN_SWING_W   = 1.6f;
+const glm::vec3 LANTERN_COLOR(1.0f, 0.62f, 0.30f);
+
+// Ruido de valor 1D suave en [-1, 1]
+static float Hash1D(int n)
+{
+	unsigned int x = (unsigned int)n;
+	x = (x << 13) ^ x;
+	x = x * (x * x * 15731u + 789221u) + 1376312589u;
+	return 1.0f - (float)(x & 0x7fffffffu) / 1073741824.0f;
+}
+float Noise1D(float x)
+{
+	int i = (int)floorf(x);
+	float f = x - (float)i;
+	f = f * f * (3.0f - 2.0f * f);
+	return Hash1D(i) * (1.0f - f) + Hash1D(i + 1) * f;
+}
+
+void InitLanterns()
+{
+	std::mt19937 rng(14); // semilla fija: la misma calle en cada ejecucion
+	std::uniform_real_distribution<float> rnd(0.0f, 2.0f * PI_F);
+	const float step = (STREET_Z_MAX - STREET_Z_MIN - 2.0f) / (ROPE_COUNT - 1);
+	for (int r = 0; r < ROPE_COUNT; r++) {
+		float z = STREET_Z_MIN + 1.0f + r * step;
+		for (int k = 0; k < LANTERNS_PER_ROPE; k++) {
+			float x = -STREET_HALF_W + (k + 0.5f) * (2.0f * STREET_HALF_W / LANTERNS_PER_ROPE);
+			lanterns.push_back({ glm::vec3(x, ROPE_HEIGHT, z), rnd(rng), rnd(rng) });
+		}
+	}
+}
+
+float LanternSwing(const Lantern& l, float t) // grados
+{
+	return LANTERN_SWING_DEG * sinf(LANTERN_SWING_W * t + l.phase);
+}
+float LanternFlicker(const Lantern& l, float t)
+{
+	return 0.92f + 0.08f * Noise1D(t * 6.0f + l.phase * 10.0f);
+}
+glm::mat4 LanternPivotMatrix(const Lantern& l, float t) // T(anclaje) * R(theta)
+{
+	glm::mat4 m = glm::translate(glm::mat4(1.0f), l.anchor);
+	glm::vec3 axis(cosf(l.axisAngle), 0.0f, sinf(l.axisAngle));
+	return glm::rotate(m, glm::radians(LanternSwing(l, t)), axis);
+}
+
+// ============================================================
+//  MODELOS DE PRUEBA + MARCADORES NUMERADOS
+//  Cada modelo se ajusta solo: se escala a 'targetH' metros de alto, se centra en X/Z y se apoya en Y=0.
+//  Cada uno lleva un numero de color flotando encima (tecla M los muestra/oculta) para poder
+//  decir "el 3 esta girado / muy grande / en mal lugar". Edita la tabla PROPS para corregirlos.
+//    side : -1 = lado izquierdo de la calle, +1 = derecho, 0 = centrado en X (usa 'z' absoluta)
+//    z    : posicion a lo largo de la calle
+//    yaw  : giro en grados sobre Y. Los de los lados miran a la calle con +-90 (el "frente" del
+//           modelo se supone en su +Z local; si esta al reves, suma 180).
+// ============================================================
+struct Prop {
+	int id;                // numero del TIPO de modelo (todas las copias de un mismo modelo comparten numero)
+	const char* file;
+	int side;              // -1 izquierda, +1 derecha, 0 centrado
+	float z;               // posicion a lo largo de la calle
+	float targetH;         // alto final en metros
+	float yaw;             // giro en grados sobre Y
+	float xOff = 0.0f;     // desplazamiento extra en X (util con side = 0)
+	float posYaw = 1e9f;   // yaw con el que se calcula la separacion al borde (por defecto = yaw)
+	float cutBelowY = -1e30f; // quita bases/losas: descarta triangulos enteros por debajo de esta altura (unidades del modelo)
+	float yOff = 0.0f;     // desplazamiento vertical en metros (negativo = hundirlo en el suelo)
+	Model* model = nullptr;
+	glm::mat4 matrix = glm::mat4(1.0f);
+	glm::vec3 pos = glm::vec3(0.0f);
+	float topY = 0.0f;
+};
+
+// ESCENA: calle de Yoiyama armada con los modelos disponibles. Orden: entrada (+Z) -> fondo (-Z).
+//  #1 casa psx   #2 tienda angosta   #3 casa de 2 pisos   #4 kiosco de flores   #5 puesto de ramen
+//  #6 altar      #7 edificio de fondo   #8 torii de entrada   #9 torii interior   #10 farol de piedra
+const char* M_PSX    = "Models/psx_japanese_house.glb";
+const char* M_STORE  = "Models/japanese_store.glb";
+const char* M_HOUSE  = "Models/house.glb";
+const char* M_FLOWER = "Models/japanese_flower_store.glb";
+const char* M_RAMEN  = "Models/stylized_japanese_ramen_street_food_stal.glb";
+const char* M_ALTAR  = "Models/stylized_japanese_altar.glb";
+const char* M_APART  = "Models/japanese_apartment.glb";
+const char* M_TORII1 = "Models/japanese_torii_gate_game_asset.glb";
+const char* M_TORII2 = "Models/japanese_torii_gate.glb";
+const char* M_LANTRN = "Models/stone_japanese_lantern.glb";
+
+std::vector<Prop> props = {
+	// --- entrada: torii y faroles de piedra a los lados ---
+	{  8, M_TORII1,  0,  27.0f, 5.0f,   0.0f },
+	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f, -4.0f, 1e9f, 64.0f },
+	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f,  4.0f, 1e9f, 64.0f },
+
+	// --- lado izquierdo ---
+	{  1, M_PSX,    -1,  20.5f, 6.25f,  0.0f },
+	{  2, M_STORE,  -1,  11.5f, 5.0f,  90.0f },
+	{  2, M_STORE,  -1,   7.9f, 5.0f,  90.0f },
+	{  2, M_STORE,  -1,   4.3f, 5.0f,  90.0f },
+	{  3, M_HOUSE,  -1,  -0.5f, 6.5f,  90.0f },
+	{  6, M_ALTAR,  -1,  -9.0f, 2.1f,  90.0f },
+	{  2, M_STORE,  -1, -14.0f, 5.0f,  90.0f },
+	{  2, M_STORE,  -1, -17.6f, 5.0f,  90.0f },
+	{  2, M_STORE,  -1, -21.2f, 5.0f,  90.0f },
+	{  3, M_HOUSE,  -1, -26.5f, 6.5f,  90.0f },
+
+	// --- lado derecho ---
+	{  2, M_STORE,  +1,  24.0f, 5.0f, -90.0f },
+	{  2, M_STORE,  +1,  20.4f, 5.0f, -90.0f },
+	{  2, M_STORE,  +1,  16.8f, 5.0f, -90.0f },
+	{  4, M_FLOWER, +1,   9.5f, 4.4f, -45.0f, 0.0f, -90.0f, 0.09f },
+	{  3, M_HOUSE,  +1,   0.0f, 6.5f, -90.0f },
+	{  5, M_RAMEN,  +1,  -8.0f, 3.75f,-135.0f, 0.0f, -90.0f },
+	{  2, M_STORE,  +1, -14.0f, 5.0f, -90.0f },
+	{  2, M_STORE,  +1, -17.6f, 5.0f, -90.0f },
+	{  2, M_STORE,  +1, -21.2f, 5.0f, -90.0f },
+	{  2, M_STORE,  +1, -24.8f, 5.0f, -90.0f },
+
+	// --- centro / fondo ---
+	{  9, M_TORII2,  0, -24.0f, 5.0f,  90.0f },
+	{  7, M_APART,   0, -42.0f, 9.0f,   0.0f, 0.0f, 1e9f, -1e30f, -0.15f },
+};
+
+const glm::vec3 MARKER_COLORS[10] = {
+	{1.00f, 0.10f, 0.10f}, // 1 rojo
+	{1.00f, 0.55f, 0.00f}, // 2 naranja
+	{1.00f, 0.95f, 0.10f}, // 3 amarillo
+	{0.55f, 1.00f, 0.10f}, // 4 verde lima
+	{0.10f, 0.85f, 0.25f}, // 5 verde
+	{0.10f, 0.90f, 0.95f}, // 6 cian
+	{0.15f, 0.40f, 1.00f}, // 7 azul
+	{0.65f, 0.25f, 1.00f}, // 8 morado
+	{1.00f, 0.20f, 0.80f}, // 9 rosa
+	{1.00f, 1.00f, 1.00f}, // 10 blanco
+};
+const glm::vec3& MarkerColor(int id) { return MARKER_COLORS[(id - 1) % 10]; }
+
+void LoadProps()
+{
+	printf("\n=== MODELOS (numero de color sobre cada uno; tecla M = mostrar/ocultar) ===\n");
+	std::map<std::string, Model*> cache; // un mismo .glb se carga una sola vez aunque aparezca en varias filas
+	for (Prop& pr : props) {
+		std::string key = std::string(pr.file) + "|" + std::to_string(pr.cutBelowY);
+		auto it = cache.find(key);
+		if (it == cache.end()) {
+			Model* mdl = new Model();
+			mdl->LoadModel(pr.file, pr.cutBelowY);
+			it = cache.emplace(key, mdl).first;
+		}
+		pr.model = it->second;
+		if (!pr.model->IsLoaded()) { printf("  #%d NO CARGO: %s\n", pr.id, pr.file); continue; }
+
+		glm::vec3 mn = pr.model->GetBoundsMin(), mx = pr.model->GetBoundsMax();
+		glm::vec3 size = mx - mn;
+		float scale = pr.targetH / size.y;
+		float cx = 0.5f * (mn.x + mx.x), cz = 0.5f * (mn.z + mx.z);
+
+		float py = (pr.posYaw > 1e8f) ? pr.yaw : pr.posYaw;
+		bool sideways = fabsf(sinf(py * toRadians)) > 0.5f; // girado +-90: su profundidad queda sobre X
+		float halfX = 0.5f * (sideways ? size.z : size.x) * scale;
+		float x = ((pr.side == 0) ? 0.0f : pr.side * (STREET_HALF_W + 0.3f + halfX)) + pr.xOff;
+
+		glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, pr.yOff, pr.z));
+		m = glm::rotate(m, glm::radians(pr.yaw), glm::vec3(0.0f, 1.0f, 0.0f));
+		m = glm::scale(m, glm::vec3(scale));
+		m = glm::translate(m, glm::vec3(-cx, -mn.y, -cz));
+		pr.matrix = m;
+		pr.pos = glm::vec3(x, 0.0f, pr.z);
+		pr.topY = pr.targetH;
+		printf("  #%-2d  alto %.2f m  yaw %+4.0f  x %+5.1f  z %+5.1f   %s\n", pr.id, pr.targetH, pr.yaw, x, pr.z, pr.file);
+	}
+}
+
+// Muestrario de texturas TEMPORALES (hechas a partir de los mapas de desplazamiento _disp_)
+struct SwatchDef { const char* file; const char* name; };
+const SwatchDef SWATCHES[5] = {
+	{ "Textures/Temporal/piedra.jpg", "piedra (piso)" },
+	{ "Textures/Temporal/pino.jpg",   "pino" },
+	{ "Textures/Temporal/arce.jpg",   "arce" },
+	{ "Textures/Temporal/tatami.jpg", "tatami" },
+	{ "Textures/Temporal/tapiz.jpg",  "tapiz (quatrefoil)" },
+};
+Texture swatchTex[5];
+
 // ============================================================
 //  MAIN
 // ============================================================
-int main()
+// Guarda el framebuffer actual como .tga (24 bits). Sirve para revisar la escena sin depender de capturas de pantalla.
+void SaveScreenshotTGA(const char* path)
 {
+	int w = (int)mainWindow.getBufferWidth(), h = (int)mainWindow.getBufferHeight();
+	std::vector<unsigned char> px((size_t)w * h * 3);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadBuffer(GL_BACK);
+	glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, px.data());
+	unsigned char hdr[18] = { 0, 0, 2, 0,0,0,0,0, 0,0,0,0, (unsigned char)(w & 255), (unsigned char)(w >> 8), (unsigned char)(h & 255), (unsigned char)(h >> 8), 24, 0 };
+	FILE* f = nullptr;
+	if (fopen_s(&f, path, "wb") != 0 || !f) return;
+	fwrite(hdr, 1, 18, f);
+	fwrite(px.data(), 1, px.size(), f);
+	fclose(f);
+}
+
+// Vistas para el modo de revision automatica:  ProyectoFinal.exe --shots <carpeta>
+// Coloca la camara en cada vista, guarda una captura y cierra el programa.
+const CamPreset AUTO_VIEWS[] = {
+	{ glm::vec3(0.0f, EYE_HEIGHT,  31.0f), -90.0f,   3.0f },   // 0 afuera de la entrada
+	{ glm::vec3(0.0f, EYE_HEIGHT,  18.0f), -90.0f,   0.0f },   // 1
+	{ glm::vec3(0.0f, EYE_HEIGHT,   6.0f), -90.0f,   0.0f },   // 2
+	{ glm::vec3(0.0f, EYE_HEIGHT,  -6.0f), -90.0f,   0.0f },   // 3
+	{ glm::vec3(0.0f, EYE_HEIGHT, -20.0f), -90.0f,   0.0f },   // 4
+	{ glm::vec3(0.0f, EYE_HEIGHT, -28.0f),  90.0f,   0.0f },   // 5 mirando de regreso a la entrada
+	{ glm::vec3(0.0f, 24.0f,  14.0f),      -90.0f, -55.0f },   // 6 vista alta (mitad entrada)
+	{ glm::vec3(0.0f, 24.0f, -14.0f),      -90.0f, -55.0f },   // 7 vista alta (mitad fondo)
+	{ glm::vec3(0.0f, EYE_HEIGHT,  10.0f), 180.0f,   4.0f },   // 8 lado izquierdo
+	{ glm::vec3(0.0f, EYE_HEIGHT,  10.0f),   0.0f,   4.0f },   // 9 lado derecho
+};
+
+int main(int argc, char** argv)
+{
+	const char* shotsDir = nullptr;
+	for (int i = 1; i + 1 < argc; i++)
+		if (strcmp(argv[i], "--shots") == 0) shotsDir = argv[i + 1];
+	int shotFrame = 0;
 	mainWindow = Window(1366, 768);
 	if (mainWindow.Initialise() != 0)
 		return 1;
@@ -445,7 +664,7 @@ int main()
 	bool audioReady = (ma_engine_init(NULL, &audioEngine) == MA_SUCCESS);
 	if (audioReady)
 	{
-		if (ma_sound_init_from_file(&audioEngine, "Audio/background_sound.mp3",
+		if (ma_sound_init_from_file(&audioEngine, "Audio/ohayashi_loop.mp3",
 			MA_SOUND_FLAG_STREAM, NULL, NULL, &bgm) == MA_SUCCESS)
 		{
 			ma_sound_set_looping(&bgm, MA_TRUE);
@@ -457,53 +676,42 @@ int main()
 
 	CreateObjects();
 	CreateShaders();
-	InitAnimations();
+	InitLanterns();
+	LoadProps();
 
 	SetCameraPreset(CAM_PRESETS[0]);
 
-	// ─── Texturas ─── (agrega las tuyas; sin archivo se ve blanco y respeta luz/color)
+	// ─── Texturas ─── (sin archivo: textura blanca + color de reemplazo)
 	plainTexture = Texture("Textures/plain.png");
 	plainTexture.LoadTextureA();
-	pisoTexture = Texture("Textures/suelo.png");
-	pisoTexture.LoadTextureA();
+	pisoTexture = Texture("Textures/Calle/piedra.jpg");
+	bool pisoLoaded = pisoTexture.LoadTextureA();
+	for (int i = 0; i < 5; i++) {
+		swatchTex[i] = Texture(SWATCHES[i].file);
+		swatchTex[i].LoadTextureA();
+	}
+	bool showMarkers = false; // tecla M: numeros de los modelos + muestrario de texturas
 
-	// ─── Modelos ─── ejemplo (comentado, no hay modelos todavia):
-	//   Model Mi_M;  (global)
-	//   Mi_M.LoadModel("Models/Carpeta/mi_modelo.glb");
-	//   ... al renderizar:  Mi_M.RenderModel(uniformColor);   // uniformColor usa el color del material del glb
-	//   Si el archivo falta, LoadModel avisa en consola y RenderModel no dibuja nada.
-
-	// ─── Skybox ─── (orden: +X -X -Y +Y +Z -Z). Sin imagenes se genera un cielo de color solido.
-	// El tint se modula con el ciclo dia/noche, asi que un solo skybox basta.
+	// ─── Skybox nocturno (generado desde el HDRI con tools/hdri_to_cubemap.py) ───
+	// Orden GL: +X -X -Y +Y +Z -Z = rt lf dn up bk ft
 	std::vector<std::string> skyboxFaces;
-	skyboxFaces.push_back("Textures/Skybox/rt.tga");
-	skyboxFaces.push_back("Textures/Skybox/lf.tga");
-	skyboxFaces.push_back("Textures/Skybox/dn.tga");
-	skyboxFaces.push_back("Textures/Skybox/up.tga");
-	skyboxFaces.push_back("Textures/Skybox/bk.tga");
-	skyboxFaces.push_back("Textures/Skybox/ft.tga");
+	skyboxFaces.push_back("Textures/Skybox/rt.png");
+	skyboxFaces.push_back("Textures/Skybox/lf.png");
+	skyboxFaces.push_back("Textures/Skybox/dn.png");
+	skyboxFaces.push_back("Textures/Skybox/up.png");
+	skyboxFaces.push_back("Textures/Skybox/bk.png");
+	skyboxFaces.push_back("Textures/Skybox/ft.png");
 	skybox = Skybox(skyboxFaces);
 
 	Material_brillante = Material(4.0f, 256);
 	Material_opaco     = Material(0.3f, 4);
 
-	// Luz direccional (solo 1 y siempre debe existir); se recalcula cada frame
 	mainLight = DirectionalLight(1.0f, 1.0f, 1.0f, 0.3f, 0.3f, 0.0f, 0.0f, -1.0f);
 
-	// Linterna pegada a la camara
+	// Linterna de la camara: apagada por defecto (tecla L); la escena se ilumina con faroles
 	unsigned int spotLightCount = 0;
-	spotLights[0] = SpotLight(1.0f, 1.0f, 1.0f,
-		0.0f, 2.0f,
-		0.0f, 0.0f, 0.0f,
-		0.0f, -1.0f, 0.0f,
-		1.0f, 0.0f, 0.0f,
-		5.0f);
-	spotLightCount++;
-
-	// Lamparas puntuales (se actualizan cada frame segun dia/noche)
-	const unsigned int POINT_LIGHT_COUNT = 3;
-	const float LAMP_Y = 3.0f;
-	const float lampPos[POINT_LIGHT_COUNT][2] = { { -6.0f, -6.0f }, { 6.0f, -6.0f }, { 0.0f, 4.0f } }; // x, z
+	spotLights[0] = SpotLight(1.0f, 1.0f, 1.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 5.0f);
+	bool flashlightOn = false;
 
 	GLuint uniformProjection = 0, uniformModel = 0, uniformView = 0, uniformEyePosition = 0,
 		uniformSpecularIntensity = 0, uniformShininess = 0, uniformTextureOffset = 0;
@@ -511,17 +719,10 @@ int main()
 
 	glm::mat4 projection = glm::perspective(45.0f, (GLfloat)mainWindow.getBufferWidth() / mainWindow.getBufferHeight(), 0.1f, 1000.0f);
 
-	glm::vec3 lowerLight(0.0f);
-	glm::mat4 model(1.0f);
 	glm::vec3 color(1.0f);
 	glm::vec2 toffset(0.0f);
 
-	// Spritesheet de ejemplo: cambia de "frame" cada 0.5 s (cols x rows)
-	int   spriteFrame = 0;
-	float spriteLastChange = 0.0f;
-	const int SPRITE_COLS = 4, SPRITE_ROWS = 3, SPRITE_COUNT = 9;
-
-	glEnable(GL_CULL_FACE); // las mallas estan en CCW; para modelos de doble cara usa glDisable/glEnable alrededor
+	glEnable(GL_CULL_FACE);
 
 	// ─── Loop principal ───────────────────────────────────────────────
 	while (!mainWindow.getShouldClose())
@@ -529,86 +730,48 @@ int main()
 		GLfloat now = (GLfloat)glfwGetTime();
 		deltaTime = now - lastTime;
 		lastTime = now;
+		float t = (float)glfwGetTime(); // tiempo absoluto para las animaciones procedurales
 
 		glfwPollEvents();
 
 		// --- Entrada ---
-		if (KeyPressedOnce(GLFW_KEY_C)) walkerWalking = !walkerWalking;
-		bool toggleMachine = KeyPressedOnce(GLFW_KEY_F);
-		if (KeyPressedOnce(GLFW_KEY_7)) { cycleElapsed = 0.0f; cycleRunning = true; }
-
+		if (KeyPressedOnce(GLFW_KEY_V)) freeCamera = !freeCamera;
+		if (KeyPressedOnce(GLFW_KEY_M)) showMarkers = !showMarkers;
+		if (KeyPressedOnce(GLFW_KEY_L)) flashlightOn = !flashlightOn;
 		if (KeyPressedOnce(GLFW_KEY_1)) SetCameraPreset(CAM_PRESETS[0]);
 		if (KeyPressedOnce(GLFW_KEY_2)) SetCameraPreset(CAM_PRESETS[1]);
 		if (KeyPressedOnce(GLFW_KEY_3)) SetCameraPreset(CAM_PRESETS[2]);
-		if (KeyPressedOnce(GLFW_KEY_4)) // sigue al dron en tiempo real (posicion al momento de pulsar)
-			SetCameraPreset({ glm::vec3(dronPath[0], dronPath[1] + 1.5f, dronPath[2] + 4.0f), -90.0f, -15.0f });
 
 		camera.keyControl(mainWindow.getsKeys(), deltaTime);
 		camera.mouseControl(mainWindow.getXChange(), mainWindow.getYChange());
+		ConstrainCamera();
 
-		// --- Animaciones ---
-		dronPath.Step();
-		dron_helixAngle += deltaTime * 720.0f; // 2 vueltas/seg
+		// --- Luz de luna (fija) ---
+		mainLight = DirectionalLight(MOON_COLOR.r, MOON_COLOR.g, MOON_COLOR.b,
+			MOON_AMBIENT, MOON_DIFFUSE, MOON_DIR.x, MOON_DIR.y, MOON_DIR.z);
 
-		if (walkerWalking) {
-			walker_cycle += deltaTime * 4.0f;
-			walker_posZ  -= walker_dir * deltaTime * 1.5f;
-			if (walker_posZ < -15.0f) { walker_posZ = -15.0f; walker_dir = -1.0f; }
-			if (walker_posZ >  15.0f) { walker_posZ =  15.0f; walker_dir =  1.0f; }
-		}
-
-		UpdateMachine(toggleMachine, deltaTime);
-
-		{
-			float t = (float)glfwGetTime();
-			if (t - spriteLastChange > 0.5f) {
-				spriteFrame = (spriteFrame + 1) % SPRITE_COUNT;
-				spriteLastChange = t;
-			}
-		}
-
-		// --- Ciclo dia/noche ---
-		if (cycleRunning) {
-			cycleElapsed += deltaTime;
-			if (cycleElapsed >= CYCLE_DURATION) cycleElapsed -= CYCLE_DURATION;
-		}
-		float cycleTime = cycleElapsed / CYCLE_DURATION;
-		float sunAngle  = cycleTime * 2.0f * PI_F;
-		float dayFactor = glm::max(0.0f, cosf(sunAngle)); // 1 = mediodia, 0 = noche
-		float sunDirX   = 0.3f;
-		float sunDirY   = -cosf(sunAngle);
-		float sunDirZ   = sinf(sunAngle);
-
-		glm::vec3 dayColor(1.00f, 0.95f, 0.80f);
-		glm::vec3 dawnColor(1.00f, 0.45f, 0.10f);
-		glm::vec3 nightColor(0.02f, 0.02f, 0.10f);
-		glm::vec3 sunColor;
-		if      (dayFactor > 0.3f) sunColor = glm::mix(dawnColor, dayColor,  (dayFactor - 0.3f) / 0.7f);
-		else if (dayFactor > 0.0f) sunColor = glm::mix(nightColor, dawnColor, dayFactor / 0.3f);
-		else                       sunColor = nightColor;
-
-		mainLight = DirectionalLight(
-			sunColor.r, sunColor.g, sunColor.b,
-			0.05f + dayFactor * 0.18f,   // ambiental
-			dayFactor * 0.45f,           // difusa
-			sunDirX, sunDirY, sunDirZ);
-
-		// Lamparas: siempre prendidas, mas intensas de noche. Atenuacion = exp*d^2 + lin*d + con
-		{
-			float nightFactor = 1.0f - dayFactor;
-			float lampAmbient = 0.1f + 0.5f * nightFactor;
-			float lampDiffuse = 1.0f + 3.0f * nightFactor;
-			for (unsigned int i = 0; i < POINT_LIGHT_COUNT; i++)
-				pointLights[i] = PointLight(1.0f, 1.0f, 0.92f, lampAmbient, lampDiffuse,
-					lampPos[i][0], LAMP_Y, lampPos[i][1], 1.0f, 0.8f, 0.6f);
+		// --- Luces de los 8 faroles mas cercanos a la camara ---
+		glm::vec3 camPos = camera.getCameraPosition();
+		std::vector<int> order(lanterns.size());
+		for (size_t i = 0; i < order.size(); i++) order[i] = (int)i;
+		auto dist2 = [&](int i) { glm::vec3 d = lanterns[i].anchor - camPos; return glm::dot(d, d); };
+		unsigned int pointLightCount = (unsigned int)std::min((size_t)MAX_POINT_LIGHTS, order.size());
+		std::partial_sort(order.begin(), order.begin() + pointLightCount, order.end(),
+			[&](int a, int b) { return dist2(a) < dist2(b); });
+		for (unsigned int i = 0; i < pointLightCount; i++) {
+			const Lantern& l = lanterns[order[i]];
+			float I = 1.9f * LanternFlicker(l, t); // I0 * (0.92 + 0.08 ruido)
+			glm::vec3 p = glm::vec3(LanternPivotMatrix(l, t) *
+				glm::vec4(0.0f, -(LANTERN_CORD_L + LANTERN_BODY_H * 0.5f), 0.0f, 1.0f));
+			pointLights[i] = PointLight(LANTERN_COLOR.r, LANTERN_COLOR.g, LANTERN_COLOR.b,
+				0.02f, I, p.x, p.y, p.z, 1.0f, 0.35f, 0.12f);
 		}
 
 		// --- Limpiar + skybox ---
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		glm::vec3 skyTint = glm::max(sunColor, glm::vec3(0.15f, 0.15f, 0.35f)); // oscurece de noche
-		skybox.SetTint(skyTint.r, skyTint.g, skyTint.b);
+		skybox.SetTint(SKY_TINT.r, SKY_TINT.g, SKY_TINT.b);
 		skybox.DrawSkybox(camera.calculateViewMatrix(), projection);
 
 		// --- Shader principal y uniforms ---
@@ -626,25 +789,24 @@ int main()
 
 		glUniform1f(uniformAlpha, 1.0f);
 		glUniform1i(uniformNoLighting, 0);
+		glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), FOG_DENSITY);
+		glUniform3f(shaderList[0].GetUniformLocation("fogColor"), FOG_COLOR.r, FOG_COLOR.g, FOG_COLOR.b);
 		glUniformMatrix4fv(uniformProjection, 1, GL_FALSE, glm::value_ptr(projection));
 		glUniformMatrix4fv(uniformView, 1, GL_FALSE, glm::value_ptr(camera.calculateViewMatrix()));
-		glUniform3f(uniformEyePosition, camera.getCameraPosition().x, camera.getCameraPosition().y, camera.getCameraPosition().z);
+		glUniform3f(uniformEyePosition, camPos.x, camPos.y, camPos.z);
 
-		lowerLight = camera.getCameraPosition();
-		lowerLight.y -= 0.3f;
-		spotLights[0].SetFlash(lowerLight, camera.getCameraDirection());
+		glm::vec3 flashPos = camPos; flashPos.y -= 0.3f;
+		spotLights[0].SetFlash(flashPos, camera.getCameraDirection());
+		spotLightCount = flashlightOn ? 1 : 0;
 
 		shaderList[0].SetDirectionalLight(&mainLight);
-		shaderList[0].SetPointLights(pointLights, POINT_LIGHT_COUNT);
+		shaderList[0].SetPointLights(pointLights, pointLightCount);
 		shaderList[0].SetSpotLights(spotLights, spotLightCount);
 
-		color = glm::vec3(1.0f);
 		toffset = glm::vec2(0.0f);
-		glUniform3fv(uniformColor, 1, glm::value_ptr(color));
 		glUniform2fv(uniformTextureOffset, 1, glm::value_ptr(toffset));
 		glDisable(GL_BLEND);
 
-		// Helpers de dibujo: fijan color + modelo y dibujan un mesh
 		auto setColor = [&](float r, float g, float b) {
 			color = glm::vec3(r, g, b);
 			glUniform3fv(uniformColor, 1, glm::value_ptr(color));
@@ -653,8 +815,7 @@ int main()
 			glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
 			meshList[meshIdx]->RenderMesh();
 		};
-		// Caja con pivote: 'pivot' esta en coordenadas de la caja unitaria (0.5,1,0.5 = centro de arriba).
-		// Sirve para que las rotaciones de extremidades giren en la articulacion.
+		// Caja con pivote en coordenadas de la caja unitaria (0.5,1,0.5 = centro de arriba)
 		auto drawBox = [&](const glm::mat4& parent, glm::vec3 size, glm::vec3 pivot) {
 			glm::mat4 m = glm::scale(parent, size);
 			m = glm::translate(m, -pivot);
@@ -662,129 +823,150 @@ int main()
 		};
 
 		// ============================================================
-		//  ESCENA DE EJEMPLO  (reemplazar por la escena del proyecto)
+		//  ESCENA
 		// ============================================================
 
-		// Piso
-		setColor(1.0f, 1.0f, 1.0f);
+		// Piso de piedra (UV: 1 repeticion cada STONE_TILE m)
+		if (pisoLoaded) setColor(1.0f, 1.0f, 1.0f); else setColor(0.38f, 0.36f, 0.34f);
 		pisoTexture.UseTexture();
 		Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
 		drawMesh(MESH_PISO, glm::mat4(1.0f));
 
 		plainTexture.UseTexture();
 
-		// Pilares (cilindros) y caja base de cada lampara
-		setColor(0.58f, 0.56f, 0.52f);
-		for (unsigned int i = 0; i < POINT_LIGHT_COUNT; i++) {
-			model = glm::translate(glm::mat4(1.0f), glm::vec3(lampPos[i][0], 0.0f, lampPos[i][1]));
-			model = glm::scale(model, glm::vec3(0.2f, LAMP_Y, 0.2f));
-			drawMesh(MESH_CILINDRO, model);
-		}
-
-		// Piramide con normales promediadas, material brillante
-		Material_brillante.UseMaterial(uniformSpecularIntensity, uniformShininess);
-		setColor(0.85f, 0.25f, 0.20f);
-		model = glm::translate(glm::mat4(1.0f), glm::vec3(-4.0f, 1.0f, 2.0f));
-		drawMesh(MESH_PIRAMIDE, model);
+		// Suelo alrededor de la calle (no transitable): adoquin mas oscuro, se pierde en la niebla
+		setColor(0.42f, 0.40f, 0.38f);
+		pisoTexture.UseTexture();
 		Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+		drawMesh(MESH_SUELO, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.03f, 0.0f)));
 
-		// Quad con hoja de sprites: toffset se aplica solo a este objeto y se reinicia
-		toffset = SpriteSheetOffset(spriteFrame, SPRITE_COLS, SPRITE_ROWS);
-		glUniform2fv(uniformTextureOffset, 1, glm::value_ptr(toffset));
-		setColor(0.9f, 0.9f, 0.3f);
-		model = glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 0.5f, -3.0f));
-		drawMesh(MESH_QUAD, model);
-		toffset = glm::vec2(0.0f);
-		glUniform2fv(uniformTextureOffset, 1, glm::value_ptr(toffset));
-
-		// Transparencia: blending + uniform alphaValue (volver a 1.0 y glDisable al terminar)
-		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glUniform1f(uniformAlpha, 0.4f);
-		setColor(0.3f, 0.6f, 1.0f);
+		// Modelos (sin culling: muchos .glb tienen caras en ambos sentidos)
 		glDisable(GL_CULL_FACE);
-		model = glm::translate(glm::mat4(1.0f), glm::vec3(4.0f, 0.0f, -3.0f));
-		model = glm::scale(model, glm::vec3(2.0f, 1.5f, 1.0f));
-		drawMesh(MESH_QUAD, model);
+		for (const Prop& pr : props) {
+			if (!pr.model || !pr.model->IsLoaded()) continue;
+			glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(pr.matrix));
+			pr.model->RenderModel(uniformColor);   // color del material del glb
+		}
 		glEnable(GL_CULL_FACE);
-		glUniform1f(uniformAlpha, 1.0f);
-		glDisable(GL_BLEND);
+		plainTexture.UseTexture();
 
-		// Maquina giratoria con inercia (tecla F): base + eje que vibra, pulsa y gira
-		{
-			setColor(0.45f, 0.45f, 0.5f);
-			model = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.0f, -2.0f));
-			drawBox(model, glm::vec3(1.0f, 0.6f, 1.0f), glm::vec3(0.5f, 0.0f, 0.5f));
-
-			glm::mat4 rot = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 1.1f, -2.0f));
-			rot = glm::rotate(rot, glm::radians(machineVib), glm::vec3(0.0f, 0.0f, 1.0f));    // vibracion
-			rot = glm::rotate(rot, glm::radians(machineAngle), glm::vec3(0.0f, 1.0f, 0.0f));   // giro
-			rot = glm::scale(rot, glm::vec3(machinePulse));                                     // pulso
-			setColor(machineOn ? 1.0f : 0.6f, machineOn ? 0.5f : 0.6f, 0.2f);
-			drawBox(rot, glm::vec3(1.2f, 0.25f, 0.25f), glm::vec3(0.5f, 0.5f, 0.5f));
-		}
-
-		// Figura procedural con jerarquia (tecla C): cada parte hereda la matriz de su padre
-		{
-			float wc       = walker_cycle;
-			float walkAmt  = walkerWalking ? 1.0f : 0.0f;
-			float legSwing = sinf(wc) * 25.0f * walkAmt;
-			float kneeFlx  = fabsf(sinf(wc)) * 18.0f * walkAmt;
-			float armSwing = sinf(wc) * 30.0f * walkAmt;
-			float bodyBob  = fabsf(sinf(wc)) * 0.04f * walkAmt;
-			float faceYaw  = (walker_dir > 0) ? 0.0f : 180.0f;
-
-			glm::mat4 base = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, bodyBob, walker_posZ));
-			base = glm::rotate(base, glm::radians(faceYaw), glm::vec3(0.0f, 1.0f, 0.0f));
-
-			// Torso (origen en la cadera) y cabeza
-			glm::mat4 hip = glm::translate(base, glm::vec3(0.0f, 0.9f, 0.0f));
-			setColor(0.2f, 0.45f, 0.85f);
-			drawBox(hip, glm::vec3(0.4f, 0.6f, 0.2f), glm::vec3(0.5f, 0.0f, 0.5f));
-			setColor(0.95f, 0.8f, 0.65f);
-			drawBox(glm::translate(hip, glm::vec3(0.0f, 0.65f, 0.0f)), glm::vec3(0.22f, 0.22f, 0.22f), glm::vec3(0.5f, 0.0f, 0.5f));
-
-			for (int side = -1; side <= 1; side += 2) {
-				float s = (float)side;
-				// Brazo: pivote en el hombro
-				glm::mat4 shoulder = glm::translate(hip, glm::vec3(0.27f * s, 0.6f, 0.0f));
-				shoulder = glm::rotate(shoulder, glm::radians(-armSwing * s), glm::vec3(1.0f, 0.0f, 0.0f));
-				setColor(0.2f, 0.45f, 0.85f);
-				drawBox(shoulder, glm::vec3(0.12f, 0.5f, 0.12f), glm::vec3(0.5f, 1.0f, 0.5f));
-
-				// Muslo (hereda cadera) -> pierna (hereda muslo)
-				glm::mat4 thigh = glm::translate(hip, glm::vec3(0.1f * s, 0.0f, 0.0f));
-				thigh = glm::rotate(thigh, glm::radians(legSwing * s), glm::vec3(1.0f, 0.0f, 0.0f));
-				setColor(0.15f, 0.15f, 0.2f);
-				drawBox(thigh, glm::vec3(0.16f, 0.4f, 0.16f), glm::vec3(0.5f, 1.0f, 0.5f));
-
-				glm::mat4 shin = glm::translate(thigh, glm::vec3(0.0f, -0.4f, 0.0f));
-				shin = glm::rotate(shin, glm::radians(kneeFlx), glm::vec3(1.0f, 0.0f, 0.0f));
-				drawBox(shin, glm::vec3(0.14f, 0.45f, 0.14f), glm::vec3(0.5f, 1.0f, 0.5f));
-			}
-		}
-
-		// Dron: trayectoria por keyframes (x,y,z,yaw) + 4 helices que heredan su matriz
-		{
-			Material_brillante.UseMaterial(uniformSpecularIntensity, uniformShininess);
-			glm::mat4 dronBase = glm::translate(glm::mat4(1.0f), glm::vec3(dronPath[0], dronPath[1], dronPath[2]));
-			dronBase = glm::rotate(dronBase, glm::radians(dronPath[3]), glm::vec3(0.0f, 1.0f, 0.0f));
-
-			setColor(0.15f, 0.15f, 0.15f);
-			drawBox(dronBase, glm::vec3(0.8f, 0.2f, 0.8f), glm::vec3(0.5f, 0.5f, 0.5f));
-
-			const glm::vec3 heliceOffsets[4] = {
-				glm::vec3(-0.6f, 0.15f,  0.6f), glm::vec3(0.6f, 0.15f,  0.6f),
-				glm::vec3(-0.6f, 0.15f, -0.6f), glm::vec3(0.6f, 0.15f, -0.6f),
-			};
-			const float heliceSigns[4] = { 1.0f, -1.0f, -1.0f, 1.0f }; // giro alterno CW/CCW
-			setColor(0.9f, 0.9f, 0.9f);
-			for (int hi = 0; hi < 4; hi++) {
-				glm::mat4 mH = glm::translate(dronBase, heliceOffsets[hi]);
-				mH = glm::rotate(mH, glm::radians(dron_helixAngle * heliceSigns[hi]), glm::vec3(0.0f, 1.0f, 0.0f));
-				drawBox(mH, glm::vec3(0.7f, 0.03f, 0.08f), glm::vec3(0.5f, 0.5f, 0.5f));
-			}
+		// Muestrario de texturas TEMPORALES contra el borde izquierdo (T1..T5), visible con M
+		if (showMarkers) {
 			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+			for (int i = 0; i < 5; i++) {
+				setColor(1.0f, 1.0f, 1.0f);
+				swatchTex[i].UseTexture();
+				glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(-STREET_HALF_W + 0.5f, 0.4f, 12.0f - i * 1.5f));
+				m = glm::rotate(m, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+				m = glm::scale(m, glm::vec3(1.2f));
+				m = glm::translate(m, glm::vec3(-0.5f, 0.0f, 0.0f));
+				drawMesh(MESH_QUAD, m);
+			}
+			plainTexture.UseTexture();
+		}
+
+		// Cuerdas de los faroles
+		setColor(0.08f, 0.06f, 0.05f);
+		{
+			const float step = (STREET_Z_MAX - STREET_Z_MIN - 2.0f) / (ROPE_COUNT - 1);
+			for (int r = 0; r < ROPE_COUNT; r++) {
+				glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, ROPE_HEIGHT, STREET_Z_MIN + 1.0f + r * step));
+				drawBox(m, glm::vec3(2.0f * STREET_HALF_W, 0.02f, 0.02f), glm::vec3(0.5f, 0.5f, 0.5f));
+			}
+		}
+
+		// Faroles: cuerda (pendulo) + tapas oscuras (iluminadas) y cuerpo emisivo (noLighting)
+		for (const Lantern& l : lanterns) {
+			glm::mat4 pivot = LanternPivotMatrix(l, t);
+			float flick = LanternFlicker(l, t);
+
+			setColor(0.05f, 0.04f, 0.03f);
+			drawBox(pivot, glm::vec3(0.015f, LANTERN_CORD_L, 0.015f), glm::vec3(0.5f, 1.0f, 0.5f));
+			glm::mat4 body = glm::translate(pivot, glm::vec3(0.0f, -LANTERN_CORD_L - LANTERN_BODY_H, 0.0f));
+			drawBox(body, glm::vec3(LANTERN_BODY_R * 1.6f, 0.04f, LANTERN_BODY_R * 1.6f), glm::vec3(0.5f, 0.0f, 0.5f));   // tapa inferior
+			drawBox(glm::translate(body, glm::vec3(0.0f, LANTERN_BODY_H, 0.0f)),
+				glm::vec3(LANTERN_BODY_R * 1.6f, 0.04f, LANTERN_BODY_R * 1.6f), glm::vec3(0.5f, 1.0f, 0.5f));           // tapa superior
+
+			glUniform1i(uniformNoLighting, 1);
+			setColor(1.0f * flick, 0.50f * flick, 0.18f * flick);
+			drawMesh(MESH_CILINDRO, glm::scale(body, glm::vec3(LANTERN_BODY_R, LANTERN_BODY_H, LANTERN_BODY_R)));
+			glUniform1i(uniformNoLighting, 0);
+		}
+
+		// Marcadores numerados (display de 7 segmentos, siempre de frente a la camara, sin iluminacion)
+		if (showMarkers) {
+			glUniform1i(uniformNoLighting, 1);
+			static const int SEG[10] = { 63, 6, 91, 79, 102, 109, 125, 7, 127, 111 }; // bits: a b c d e f g
+			const float DW = 0.34f, DH = 0.60f, DT = 0.07f, DZ = 0.05f, GAP = 0.12f;
+
+			// Dibuja un numero (con prefijo 'T' opcional) centrado en 'at', escalado por 'k'
+			auto drawLabel = [&](glm::vec3 at, int number, bool tPrefix, glm::vec3 col, float k) {
+				float yawToCam = atan2f(camPos.x - at.x, camPos.z - at.z);
+				glm::mat4 base = glm::translate(glm::mat4(1.0f), at);
+				base = glm::rotate(base, yawToCam, glm::vec3(0.0f, 1.0f, 0.0f));
+				base = glm::scale(base, glm::vec3(k));
+
+				char txt[8]; int nd = snprintf(txt, sizeof(txt), "%d", number);
+				int cells = nd + (tPrefix ? 1 : 0);
+				float total = cells * DW + (cells - 1) * GAP;
+
+				// placa oscura detras para contraste
+				setColor(0.0f, 0.0f, 0.0f);
+				drawBox(glm::translate(base, glm::vec3(0.0f, DH * 0.5f, -0.04f)),
+					glm::vec3(total + 0.24f, DH + 0.24f, 0.03f), glm::vec3(0.5f, 0.5f, 0.5f));
+
+				setColor(col.r, col.g, col.b);
+				float x0 = -total * 0.5f;
+				auto seg = [&](float cx, float cy, float w, float h) {
+					drawBox(glm::translate(base, glm::vec3(cx, cy, 0.0f)), glm::vec3(w, h, DZ), glm::vec3(0.5f, 0.5f, 0.5f));
+				};
+				int cell = 0;
+				if (tPrefix) { // letra T
+					float cx = x0 + DW * 0.5f;
+					seg(cx, DH - DT * 0.5f, DW, DT);
+					seg(cx, DH * 0.5f, DT, DH);
+					cell++;
+				}
+				for (int d = 0; d < nd; d++, cell++) {
+					int mask = SEG[txt[d] - '0'];
+					float left = x0 + cell * (DW + GAP);
+					if (mask & 1)  seg(left + DW * 0.5f,      DH - DT * 0.5f, DW, DT);          // a
+					if (mask & 2)  seg(left + DW - DT * 0.5f, DH * 0.75f,     DT, DH * 0.5f);   // b
+					if (mask & 4)  seg(left + DW - DT * 0.5f, DH * 0.25f,     DT, DH * 0.5f);   // c
+					if (mask & 8)  seg(left + DW * 0.5f,      DT * 0.5f,      DW, DT);          // d
+					if (mask & 16) seg(left + DT * 0.5f,      DH * 0.25f,     DT, DH * 0.5f);   // e
+					if (mask & 32) seg(left + DT * 0.5f,      DH * 0.75f,     DT, DH * 0.5f);   // f
+					if (mask & 64) seg(left + DW * 0.5f,      DH * 0.5f,      DW, DT);          // g
+				}
+			};
+
+			for (const Prop& pr : props) {
+				if (!pr.model || !pr.model->IsLoaded()) continue;
+				const glm::vec3& col = MarkerColor(pr.id);
+				glm::vec3 top(pr.pos.x, pr.topY + 1.0f, pr.pos.z);
+				float k = glm::clamp(glm::length(top - camPos) / 8.0f, 1.0f, 5.0f); // crece con la distancia
+				setColor(col.r, col.g, col.b);   // poste que une el modelo con su numero
+				drawBox(glm::translate(glm::mat4(1.0f), glm::vec3(pr.pos.x, pr.topY, pr.pos.z)),
+					glm::vec3(0.06f * k, 1.0f, 0.06f * k), glm::vec3(0.5f, 0.0f, 0.5f));
+				drawLabel(top, pr.id, false, col, k);
+			}
+			for (int i = 0; i < 5; i++) // T1..T5 sobre cada muestra de textura
+				drawLabel(glm::vec3(-STREET_HALF_W + 0.5f, 1.85f, 12.0f - i * 1.5f), i + 1, true, glm::vec3(1.0f), 1.0f);
+
+			glUniform1i(uniformNoLighting, 0);
+		}
+
+		if (shotsDir) { // modo revision: 1 captura por vista, luego cierra
+			const int N = (int)(sizeof(AUTO_VIEWS) / sizeof(AUTO_VIEWS[0]));
+			int view = shotFrame / 30, phase = shotFrame % 30;
+			if (phase == 0 && view < N) { SetCameraPreset(AUTO_VIEWS[view]); freeCamera = true; }
+			if (phase == 20 && view < N) {
+				char path[512];
+				snprintf(path, sizeof(path), "%s/view%d.tga", shotsDir, view);
+				SaveScreenshotTGA(path);
+			}
+			shotFrame++;
+			if (view >= N) mainWindow.setShouldClose(true);
 		}
 
 		glFlush();

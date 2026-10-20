@@ -18,6 +18,8 @@ Skybox::Skybox(std::vector<std::string> faceLocations)
 	glGenTextures(1, &textureId);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, textureId);
 	int width, height, bitDepth;
+	// Las caras se guardan sin voltear (Texture.cpp activa el flip global de stb)
+	stbi_set_flip_vertically_on_load(false);
 	for (size_t i = 0; i < 6; i++)
 	{
 		unsigned char *texData = (i < faceLocations.size())
