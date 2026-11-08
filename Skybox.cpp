@@ -26,14 +26,14 @@ Skybox::Skybox(std::vector<std::string> faceLocations)
 			? stbi_load(faceLocations[i].c_str(), &width, &height, &bitDepth, 0) : nullptr;
 		if (!texData)
 		{
-			// Sin textura: cara de color solido (orden: +X -X -Y +Y +Z -Z) para que el
+			// Sin textura: cara de color solido (orden GL: +X -X +Y -Y +Z -Z) para que el
 			// skybox y su tint (ciclo dia/noche) sigan funcionando.
 			if (i < faceLocations.size())
 				printf("No se encontro : %s\n", faceLocations[i].c_str());
 			const unsigned char sky[3]    = { 150, 195, 240 };
 			const unsigned char top[3]    = {  90, 150, 235 };
 			const unsigned char ground[3] = {  90,  90,  90 };
-			const unsigned char* c = (i == 3) ? top : (i == 2) ? ground : sky;
+			const unsigned char* c = (i == 2) ? top : (i == 3) ? ground : sky;
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, c);
 			continue;

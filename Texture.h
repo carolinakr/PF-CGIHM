@@ -9,6 +9,8 @@ public:
 	bool LoadTextureA();
 	bool LoadTextureFromMemory(const unsigned char* data, int dataLen);
 	void UseTexture();
+	int GetWidth() const { return width; }
+	int GetHeight() const { return height; }
 	void ClearTexture();
 	~Texture();
 private:

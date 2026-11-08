@@ -8,11 +8,11 @@ Model::Model()
 {
 }
 
-void Model::LoadModel(const std::string & fileName, float cutBelowYArg)
+void Model::LoadModel(const std::string & fileName, float cutBelowYArg, bool keepMeshes)
 {
 	cutBelowY = cutBelowYArg;
 	Assimp::Importer importer;
-	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_PreTransformVertices);
+	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | (keepMeshes ? 0u : (unsigned int)aiProcess_PreTransformVertices));
 	if (!scene)
 	{
 		printf("Fall en cargar el modelo: %s \n", fileName.c_str());
@@ -45,6 +45,19 @@ void Model::ClearModel()
 		}
 	}
 
+}
+
+void Model::RenderMeshRange(unsigned int first, unsigned int count, GLuint colorLocation)
+{
+	for (unsigned int i = first; i < first + count && i < MeshList.size(); i++)
+	{
+		unsigned int materialIndex = meshTotex[i];
+		if (materialIndex < TextureList.size() && TextureList[materialIndex])
+			TextureList[materialIndex]->UseTexture();
+		if (colorLocation != 0 && materialIndex < materialColors.size())
+			glUniform3fv(colorLocation, 1, glm::value_ptr(materialColors[materialIndex]));
+		MeshList[i]->RenderMesh();
+	}
 }
 
 void Model::RenderModel(GLuint colorLocation)

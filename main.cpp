@@ -23,6 +23,7 @@ Controles:
 #include <math.h>
 #include <random>
 #include <map>
+#include <functional>
 #include <algorithm>
 
 #include "miniaudio.h"
@@ -51,6 +52,7 @@ Controles:
 
 const float toRadians = 3.14159265f / 180.0f;
 const float PI_F      = 3.14159265f;
+const float STREET_HALF_W = 8.0f;     // media anchura de la calle: 16 m en total (las posiciones laterales dependen de esto)
 
 // ============================================================
 //  ESTADO GLOBAL
@@ -87,6 +89,16 @@ int MESH_CILINDRO = -1; // cilindro radio 1, altura 1 (solo lateral)
 int MESH_PISO     = -1; // quad horizontal con UVs repetidas
 int MESH_PIRAMIDE = -1; // piramide con normales promediadas
 int MESH_SUELO   = -1; // suelo grande alrededor de la calle
+int MESH_RUEDA   = -1; // rueda de madera (radio 1, eje X)
+int MESH_TINA    = -1; // pared de la pileta (duelas de madera)
+int MESH_DISCO   = -1; // disco horizontal (fondo y agua de la pileta)
+int MESH_ARO     = -1; // aro de la red (poi), radio 1 en el plano XZ
+int MESH_TAZON   = -1; // tazon donde caen los peces
+// Atlas Textures/UI/hud_digitos.png (1000 x 120): los glifos no estan en una rejilla regular, se miden uno por uno
+const int DIG_X0[10] = {   9, 106, 185, 288, 395, 504, 610, 716, 807, 912 };
+const int DIG_X1[10] = {  89, 163, 265, 372, 481, 585, 688, 791, 890, 994 };
+int MESH_DIG[10];
+float digitAspect[10];   // ancho / alto de cada glifo
 int MESH_QUAD     = -1; // quad vertical unitario [0,1] (flyers/billboards)
 
 // ============================================================
@@ -220,14 +232,156 @@ int MakeBox()
 	return (int)meshList.size() - 1;
 }
 
+// Agrega una caja unitaria centrada en el origen, transformada por M, a una malla en construccion.
+// Normales hacia adentro (convencion del shader), igual que MakeBox.
+void AppendBox(std::vector<GLfloat>& verts, std::vector<unsigned int>& inds, const glm::mat4& M)
+{
+	static const glm::vec3 N[6] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+	static const glm::vec3 A[6] = { {0,1,0}, {0,0,1},  {0,0,1}, {1,0,0},  {1,0,0}, {0,1,0} };
+	static const glm::vec3 B[6] = { {0,0,1}, {0,1,0},  {1,0,0}, {0,0,1},  {0,1,0}, {1,0,0} };
+	glm::mat3 nm = glm::mat3(glm::transpose(glm::inverse(M)));
+	for (int f = 0; f < 6; f++) {
+		unsigned int base = (unsigned int)(verts.size() / 8);
+		const glm::vec3 c[4] = {
+			N[f] * 0.5f - A[f] * 0.5f - B[f] * 0.5f, N[f] * 0.5f + A[f] * 0.5f - B[f] * 0.5f,
+			N[f] * 0.5f + A[f] * 0.5f + B[f] * 0.5f, N[f] * 0.5f - A[f] * 0.5f + B[f] * 0.5f };
+		const float uv[4][2] = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+		glm::vec3 n = glm::normalize(nm * (-N[f]));
+		for (int k = 0; k < 4; k++) {
+			glm::vec3 p = glm::vec3(M * glm::vec4(c[k], 1.0f));
+			verts.insert(verts.end(), { p.x, p.y, p.z, uv[k][0], uv[k][1], n.x, n.y, n.z });
+		}
+		inds.insert(inds.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
+	}
+}
+
+// Rueda de madera de radio 1 con el eje a lo largo de X: llanta de 24 tramos, 12 radios y un cubo.
+int MakeWheel()
+{
+	std::vector<GLfloat> v;
+	std::vector<unsigned int> idx;
+	const float TAU = 2.0f * PI_F;
+	const glm::vec3 X(1.0f, 0.0f, 0.0f);
+
+	const int RIM = 24;                      // llanta
+	for (int k = 0; k < RIM; k++) {
+		float ph = TAU * k / RIM;
+		glm::mat4 M = glm::translate(glm::mat4(1.0f), 0.93f * glm::vec3(0.0f, cosf(ph), sinf(ph)));
+		M = glm::rotate(M, ph, X);
+		M = glm::scale(M, glm::vec3(0.34f, 0.15f, 0.26f));   // ancho, grosor radial, largo del tramo
+		AppendBox(v, idx, M);
+	}
+	const int SPOKES = 12;                   // radios
+	for (int k = 0; k < SPOKES; k++) {
+		float ph = TAU * k / SPOKES + TAU / 48.0f;
+		glm::mat4 M = glm::translate(glm::mat4(1.0f), 0.46f * glm::vec3(0.0f, cosf(ph), sinf(ph)));
+		M = glm::rotate(M, ph, X);
+		M = glm::scale(M, glm::vec3(0.13f, 0.80f, 0.10f));
+		AppendBox(v, idx, M);
+	}
+	for (int k = 0; k < 3; k++) {            // cubo: tres prismas girados 30 grados = casi un cilindro
+		glm::mat4 M = glm::rotate(glm::mat4(1.0f), glm::radians(30.0f * k), X);
+		M = glm::scale(M, glm::vec3(0.50f, 0.30f, 0.30f));
+		AppendBox(v, idx, M);
+	}
+
+	Mesh* m = new Mesh();
+	m->CreateMesh(v.data(), idx.data(), (unsigned)v.size(), (unsigned)idx.size());
+	meshList.push_back(m);
+	return (int)meshList.size() - 1;
+}
+
+// Pared de una tina de duelas de madera: 'staves' cajas alrededor de un circulo (radio interior 'radius').
+int MakeTub(float radius, float height, int staves, float thick)
+{
+	std::vector<GLfloat> v;
+	std::vector<unsigned int> idx;
+	const float TAU = 2.0f * PI_F;
+	float w = TAU * radius / staves * 1.05f;
+	for (int k = 0; k < staves; k++) {
+		float phi = TAU * k / staves;
+		float rc = radius + thick * 0.5f;
+		glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(rc * cosf(phi), height * 0.5f, rc * sinf(phi)));
+		M = glm::rotate(M, PI_F * 0.5f - phi, glm::vec3(0.0f, 1.0f, 0.0f));   // +Z local = hacia afuera
+		M = glm::scale(M, glm::vec3(w, height, thick));
+		AppendBox(v, idx, M);
+	}
+	Mesh* m = new Mesh();
+	m->CreateMesh(v.data(), idx.data(), (unsigned)v.size(), (unsigned)idx.size());
+	meshList.push_back(m);
+	return (int)meshList.size() - 1;
+}
+
+// Disco horizontal en y = 0 con 'rings' anillos (para que las ondas del shader se vean) y UV 0..1
+int MakeDisc(float radius, int rings, int sectors)
+{
+	std::vector<GLfloat> v;
+	std::vector<unsigned int> idx;
+	for (int r = 0; r <= rings; r++)
+		for (int s = 0; s < sectors; s++) {
+			float rr = radius * r / rings, a = 2.0f * PI_F * s / sectors;
+			float x = rr * cosf(a), z = rr * sinf(a);
+			v.insert(v.end(), { x, 0.0f, z, 0.5f + 0.5f * x / radius, 0.5f + 0.5f * z / radius, 0.0f, -1.0f, 0.0f });
+		}
+	for (int r = 0; r < rings; r++)
+		for (int s = 0; s < sectors; s++) {
+			unsigned int a = r * sectors + s, b = r * sectors + (s + 1) % sectors;
+			unsigned int c = (r + 1) * sectors + s, d = (r + 1) * sectors + (s + 1) % sectors;
+			idx.insert(idx.end(), { a, c, b, b, c, d });
+		}
+	Mesh* m = new Mesh();
+	m->CreateMesh(v.data(), idx.data(), (unsigned)v.size(), (unsigned)idx.size());
+	meshList.push_back(m);
+	return (int)meshList.size() - 1;
+}
+
+// Aro de radio 1 en el plano XZ hecho con 'segs' cajas (el grosor 'thick' esta en unidades de radio)
+int MakeRing(int segs, float thick)
+{
+	std::vector<GLfloat> v;
+	std::vector<unsigned int> idx;
+	const float TAU = 2.0f * PI_F;
+	float w = TAU / segs * 1.1f;
+	for (int k = 0; k < segs; k++) {
+		float phi = TAU * k / segs;
+		glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(cosf(phi), 0.0f, sinf(phi)));
+		M = glm::rotate(M, PI_F * 0.5f - phi, glm::vec3(0.0f, 1.0f, 0.0f));
+		M = glm::scale(M, glm::vec3(w, thick, thick));
+		AppendBox(v, idx, M);
+	}
+	Mesh* m = new Mesh();
+	m->CreateMesh(v.data(), idx.data(), (unsigned)v.size(), (unsigned)idx.size());
+	meshList.push_back(m);
+	return (int)meshList.size() - 1;
+}
+
 void CreateObjects()
 {
 	MESH_CAJA     = MakeBox();
 	MESH_CILINDRO = MakeCylinder(18);
+	MESH_RUEDA    = MakeWheel();
+	MESH_TINA     = MakeTub(0.70f, 0.30f, 40, 0.045f);
+	MESH_DISCO    = MakeDisc(0.70f, 12, 40);
+	MESH_ARO      = MakeRing(24, 0.10f);
+	MESH_TAZON    = MakeTub(0.20f, 0.13f, 24, 0.02f);
+	for (int d = 0; d < 10; d++) {   // quad de cada digito con su rectangulo de UV exacto
+		float u0 = (DIG_X0[d] - 2) / 1000.0f, u1 = (DIG_X1[d] + 3) / 1000.0f;
+		float v0 = 1.0f - 96.0f / 120.0f, v1 = 1.0f - 16.0f / 120.0f;
+		unsigned int idx[] = { 0, 1, 2, 0, 2, 3 };
+		GLfloat v[] = { 0.0f, 0.0f, 0.0f, u0, v0, 0.0f, 0.0f, -1.0f,
+		                1.0f, 0.0f, 0.0f, u1, v0, 0.0f, 0.0f, -1.0f,
+		                1.0f, 1.0f, 0.0f, u1, v1, 0.0f, 0.0f, -1.0f,
+		                0.0f, 1.0f, 0.0f, u0, v1, 0.0f, 0.0f, -1.0f };
+		Mesh* m = new Mesh();
+		m->CreateMesh(v, idx, 32, 6);
+		meshList.push_back(m);
+		MESH_DIG[d] = (int)meshList.size() - 1;
+		digitAspect[d] = (DIG_X1[d] - DIG_X0[d] + 1 + 5) / 80.0f;
+	}
 
 	// Piso de la calle: 10 m (X) x 60 m (Z); UV = metros / STONE_TILE (1 repeticion cada 2 m)
 	{
-		const float W = 5.0f, Z0 = -30.0f, Z1 = 30.0f, STONE_TILE = 2.0f;
+		const float W = STREET_HALF_W, Z0 = -30.0f, Z1 = 30.0f, STONE_TILE = 2.0f;
 		unsigned int idx[] = { 0, 2, 1,  1, 2, 3 };
 		GLfloat v[] = {
 			// x    y     z      u                     v                        nx    ny    nz
@@ -341,6 +495,7 @@ public:
 	}
 
 	float operator[](int i) const { return value[i]; }
+	int Segment() const { return idx; }   // segmento actual (cuadro clave de partida)
 
 private:
 	void Interpolate()
@@ -359,7 +514,6 @@ private:
 //  CALLE DE YOIYAMA  (1 unidad = 1 m)
 //  Calle peatonal de 10 m x 60 m a lo largo de Z; el usuario entra por +Z mirando a -Z.
 // ============================================================
-const float STREET_HALF_W = 5.0f;     // ancho 10 m
 const float STREET_Z_MIN  = -30.0f;   // fondo (fuegos artificiales)
 const float STREET_Z_MAX  =  30.0f;   // entrada (torii)
 const float EYE_HEIGHT    = 1.7f;
@@ -375,6 +529,8 @@ const CamPreset CAM_PRESETS[3] = {
 };
 const float CAM_MOVE_SPEED = 3.5f;
 const float CAM_TURN_SPEED = 0.25f;
+float moonAmbientOverride = -1.0f; // >= 0 reemplaza MOON_AMBIENT (capturas aereas)
+float fogDensityOverride = -1.0f; // >= 0 reemplaza FOG_DENSITY (usado por las capturas aereas)
 bool freeCamera = false; // tecla V: camara libre (sin limites de calle ni altura fija)
 
 void SetCameraPreset(const CamPreset& p)
@@ -419,12 +575,13 @@ struct Lantern {
 	glm::vec3 anchor;   // punto de la cuerda de donde cuelga
 	float phase;        // phi_i
 	float axisAngle;    // direccion (en XZ) del eje de giro
+	float scale = 1.0f; // tamano relativo (los faroles del templo son mas grandes)
 };
 std::vector<Lantern> lanterns;
 
 const int   ROPE_COUNT        = 12;
-const int   LANTERNS_PER_ROPE = 5;
-const float ROPE_HEIGHT       = 4.5f;
+const int   LANTERNS_PER_ROPE = 7;
+const float ROPE_HEIGHT       = 6.2f;   // sobre los carros (5.1 m)
 const float LANTERN_CORD_L    = 0.30f;  // L: cuerda hasta el farol
 const float LANTERN_BODY_H    = 0.45f;
 const float LANTERN_BODY_R    = 0.22f;
@@ -513,44 +670,57 @@ const char* M_HOUSE  = "Models/house.glb";
 const char* M_FLOWER = "Models/japanese_flower_store.glb";
 const char* M_RAMEN  = "Models/stylized_japanese_ramen_street_food_stal.glb";
 const char* M_ALTAR  = "Models/stylized_japanese_altar.glb";
-const char* M_APART  = "Models/japanese_apartment.glb";
+const char* M_TEMPLE = "Models/japanese_temple.glb";
+const char* M_NOODLE = "Models/japanese_noodle_stand.glb";
+const char* M_CHOCO  = "Models/japanese_chocolate_banana_stall.glb";
+const char* M_ICE    = "Models/japanese_shaved_ice_stall.glb";
+const char* M_RESTO  = "Models/japan_house_restaurant_by_night.glb";
+const char* M_TOKYO  = "Models/japanese_shop_-_tokyo.glb";
 const char* M_TORII1 = "Models/japanese_torii_gate_game_asset.glb";
 const char* M_TORII2 = "Models/japanese_torii_gate.glb";
 const char* M_LANTRN = "Models/stone_japanese_lantern.glb";
 
 std::vector<Prop> props = {
 	// --- entrada: torii y faroles de piedra a los lados ---
-	{  8, M_TORII1,  0,  27.0f, 5.0f,   0.0f },
-	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f, -4.0f, 1e9f, 64.0f },
-	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f,  4.0f, 1e9f, 64.0f },
+	{  8, M_TORII1,  0,  27.0f, 7.0f,   0.0f },
+	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f, -(STREET_HALF_W - 2.8f), 1e9f, 64.0f },
+	{ 10, M_LANTRN,  0,  24.5f, 1.8f,  90.0f,  (STREET_HALF_W - 2.8f), 1e9f, 64.0f },
 
-	// --- lado izquierdo ---
-	{  1, M_PSX,    -1,  20.5f, 6.25f,  0.0f },
-	{  2, M_STORE,  -1,  11.5f, 5.0f,  90.0f },
-	{  2, M_STORE,  -1,   7.9f, 5.0f,  90.0f },
-	{  2, M_STORE,  -1,   4.3f, 5.0f,  90.0f },
-	{  3, M_HOUSE,  -1,  -0.5f, 6.5f,  90.0f },
-	{  6, M_ALTAR,  -1,  -9.0f, 2.1f,  90.0f },
-	{  2, M_STORE,  -1, -14.0f, 5.0f,  90.0f },
-	{  2, M_STORE,  -1, -17.6f, 5.0f,  90.0f },
-	{  2, M_STORE,  -1, -21.2f, 5.0f,  90.0f },
-	{  3, M_HOUSE,  -1, -26.5f, 6.5f,  90.0f },
+	// --- lado izquierdo (yaw 90 = de frente a la calle) ---
+	{  1, M_PSX,    -1,  20.5f, 6.25f,   0.0f },
+	{ 15, M_TOKYO,  -1,  11.8f, 6.3f,   90.0f },
+	{  2, M_STORE,  -1,   8.0f, 5.0f,   90.0f },
+	{  3, M_HOUSE,  -1,   2.5f, 6.5f,   90.0f },
+	{  2, M_STORE,  -1,  -2.3f, 5.0f,   90.0f },
+	{ 15, M_TOKYO,  -1,  -6.3f, 6.3f,   90.0f },
+	{  6, M_ALTAR,  -1, -10.4f, 2.1f,   90.0f },
+	{  2, M_STORE,  -1, -13.8f, 5.0f,   90.0f },
+	{  3, M_HOUSE,  -1, -18.5f, 6.5f,   90.0f },
+	{  2, M_STORE,  -1, -23.4f, 5.0f,   90.0f },
+	{ 14, M_RESTO,  -1, -29.5f, 4.5f,   90.0f },   // restaurante al fondo
 
-	// --- lado derecho ---
-	{  2, M_STORE,  +1,  24.0f, 5.0f, -90.0f },
-	{  2, M_STORE,  +1,  20.4f, 5.0f, -90.0f },
-	{  2, M_STORE,  +1,  16.8f, 5.0f, -90.0f },
-	{  4, M_FLOWER, +1,   9.5f, 4.4f, -45.0f, 0.0f, -90.0f, 0.09f },
-	{  3, M_HOUSE,  +1,   0.0f, 6.5f, -90.0f },
+	// --- lado derecho (yaw -90) ---
+	{  2, M_STORE,  +1,  24.0f, 5.0f,  -90.0f },
+	{ 15, M_TOKYO,  +1,  20.2f, 6.3f,  -90.0f },
+	{  2, M_STORE,  +1,  16.4f, 5.0f,  -90.0f },
+	{  4, M_FLOWER, +1,   9.5f, 4.4f,  -45.0f, 0.0f, -90.0f, 0.09f },
+	{  3, M_HOUSE,  +1,   0.0f, 6.5f,  -90.0f },
 	{  5, M_RAMEN,  +1,  -8.0f, 3.75f,-135.0f, 0.0f, -90.0f },
-	{  2, M_STORE,  +1, -14.0f, 5.0f, -90.0f },
-	{  2, M_STORE,  +1, -17.6f, 5.0f, -90.0f },
-	{  2, M_STORE,  +1, -21.2f, 5.0f, -90.0f },
-	{  2, M_STORE,  +1, -24.8f, 5.0f, -90.0f },
+	{ 14, M_RESTO,  +1, -16.8f, 4.5f,  -90.0f },
+	{ 15, M_TOKYO,  +1, -22.7f, 6.3f,  -90.0f },
+	{  1, M_PSX,    +1, -30.5f, 6.25f, 180.0f },
+
+	// --- stands en el borde de la calle (xOff = x; yaw mira al centro) ---
+	{ 11, M_NOODLE,  0,  14.5f, 2.4f, -90.0f,  (STREET_HALF_W - 1.0f) },
+	{ 13, M_ICE,     0,  -3.5f, 2.5f, -90.0f,  (STREET_HALF_W - 1.0f) },
+	{ 12, M_CHOCO,   0, -12.0f, 2.5f, -90.0f,  (STREET_HALF_W - 1.0f) },
+	{ 12, M_CHOCO,   0,  15.0f, 2.5f,  90.0f, -(STREET_HALF_W - 1.0f) },
+	{ 13, M_ICE,     0,   7.0f, 2.5f,  90.0f, -(STREET_HALF_W - 1.0f) },
+	{ 11, M_NOODLE,  0, -12.5f, 2.4f,  90.0f, -(STREET_HALF_W - 1.0f) },
 
 	// --- centro / fondo ---
-	{  9, M_TORII2,  0, -24.0f, 5.0f,  90.0f },
-	{  7, M_APART,   0, -42.0f, 9.0f,   0.0f, 0.0f, 1e9f, -1e30f, -0.15f },
+	{  9, M_TORII2,  0, -31.5f, 7.0f,  90.0f },   // torii antes del templo
+	{  7, M_TEMPLE,  0, -40.3f, 20.0f,  0.0f },   // templo al final de la calle (20 m de alto)
 };
 
 const glm::vec3 MARKER_COLORS[10] = {
@@ -615,6 +785,619 @@ const SwatchDef SWATCHES[5] = {
 Texture swatchTex[5];
 
 // ============================================================
+//  CARROS (kankoboko.glb) CON RUEDAS Y VIGAS DE MADERA GENERADAS EN CODIGO
+//  El modelo viene sin ruedas: se le agregan 4 ruedas (2 delanteras, 2 traseras) y dos vigas
+//  longitudinales, una por lado, que unen la rueda delantera con la trasera.
+//  Los carros dan vueltas a un circuito: van al templo pegados al lado izquierdo, hacen una curva suave
+//  de media vuelta cerca del templo y regresan a la entrada pegados al lado derecho, donde giran de nuevo.
+//  Sistema local de cada carro: el frente mira a -Z, X es el ancho.
+// ============================================================
+const char* M_CART = "Models/kankoboko.glb";
+const float CART_MODEL_YAW = 90.0f; // giro (grados): pone el lado largo del modelo a lo largo de Z (avance)
+const float CART_SCALE     = 0.50f; // escala del modelo (1.0 = tamano original de 10 m de alto)
+const float CART_BODY_Y    = 0.14f; // altura del fondo del cuerpo: casi al ras del suelo
+const float WHEEL_R        = 0.50f; // radio de las ruedas
+const float BEAM_T         = 0.11f; // grosor de las vigas
+const int   CART_COUNT     = 4;
+const float CART_GAP       = 6.5f;  // separacion entre carros (m): van en caravana
+const float CART_SPEED     = 0.2f;  // m/s (muy lento)
+const float CART_LANE      = 2.6f;  // carril izquierdo en x = -2.6 y derecho en x = +2.6 (tambien es el radio de la curva)
+const float CART_Z_FAR     = -20.5f; // centro de la curva del lado del templo
+const float CART_Z_NEAR    =  21.0f; // centro de la curva del lado de la entrada
+
+struct CartRig {
+	Model* model = nullptr;
+	glm::mat4 bodyMatrix = glm::mat4(1.0f); // modelo -> espacio local del carro
+	float width = 0.0f, length = 0.0f;
+	float wheelX = 0.0f, wheelZ = 0.0f, beamX = 0.0f;
+};
+CartRig cartRig;
+Texture woodTexture;
+bool woodLoaded = false;
+
+float cartDist  = 30.0f;   // distancia recorrida por el carro 0 sobre el circuito (m)
+float cartWheel = 0.0f;   // angulo acumulado de las ruedas (grados)
+
+// Longitud del circuito: dos rectas y dos medias vueltas
+float CartLoopLength() { return 2.0f * (CART_Z_NEAR - CART_Z_FAR) + 2.0f * PI_F * CART_LANE; }
+
+// Posicion y rumbo (grados, 0 = mirando a -Z) sobre el circuito a la distancia s
+glm::vec3 CartPath(float s, float& headingDeg)
+{
+	const float straight = CART_Z_NEAR - CART_Z_FAR, arc = PI_F * CART_LANE, L = CartLoopLength();
+	s = fmodf(s, L); if (s < 0.0f) s += L;
+	glm::vec2 pos, tan;                      // (x, z) y tangente unitaria
+	if (s < straight) {                      // ida por la izquierda, hacia el templo (-Z)
+		pos = glm::vec2(-CART_LANE, CART_Z_NEAR - s);  tan = glm::vec2(0.0f, -1.0f);
+	} else if (s < straight + arc) {         // curva del lado del templo
+		float f = (s - straight) / CART_LANE;
+		pos = glm::vec2(-CART_LANE * cosf(f), CART_Z_FAR - CART_LANE * sinf(f));  tan = glm::vec2(sinf(f), -cosf(f));
+	} else if (s < 2.0f * straight + arc) {  // regreso por la derecha, hacia la entrada (+Z)
+		pos = glm::vec2(CART_LANE, CART_Z_FAR + (s - straight - arc));  tan = glm::vec2(0.0f, 1.0f);
+	} else {                                 // curva del lado de la entrada
+		float f = (s - 2.0f * straight - arc) / CART_LANE;
+		pos = glm::vec2(CART_LANE * cosf(f), CART_Z_NEAR + CART_LANE * sinf(f));  tan = glm::vec2(-sinf(f), cosf(f));
+	}
+	headingDeg = glm::degrees(atan2f(-tan.x, -tan.y));   // el frente del carro (-Z local) mira a lo largo de la tangente
+	return glm::vec3(pos.x, 0.0f, pos.y);
+}
+
+void LoadCart()
+{
+	cartRig.model = new Model();
+	cartRig.model->LoadModel(M_CART);
+	if (!cartRig.model->IsLoaded()) { printf("NO CARGO el carro: %s\n", M_CART); cartRig.model = nullptr; return; }
+
+	glm::vec3 mn = cartRig.model->GetBoundsMin(), mx = cartRig.model->GetBoundsMax();
+	glm::mat4 R = glm::rotate(glm::mat4(1.0f), glm::radians(CART_MODEL_YAW), glm::vec3(0.0f, 1.0f, 0.0f));
+	R = glm::scale(R, glm::vec3(CART_SCALE));
+	glm::vec3 lo(1e30f), hi(-1e30f);
+	for (int i = 0; i < 8; i++) {   // caja envolvente del modelo ya girado y escalado
+		glm::vec3 c((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z);
+		glm::vec3 p = glm::vec3(R * glm::vec4(c, 1.0f));
+		lo = glm::min(lo, p); hi = glm::max(hi, p);
+	}
+	cartRig.width  = hi.x - lo.x;
+	cartRig.length = hi.z - lo.z;
+	cartRig.bodyMatrix = glm::translate(glm::mat4(1.0f),
+		glm::vec3(-0.5f * (lo.x + hi.x), CART_BODY_Y - lo.y, -0.5f * (lo.z + hi.z))) * R;
+
+	// de adentro hacia afuera: cuerpo, viga, rueda (el cubo de la rueda toca la viga)
+	const float wheelHalfW = 0.17f * WHEEL_R;
+	cartRig.beamX  = cartRig.width * 0.5f + BEAM_T * 0.5f - 0.01f;
+	cartRig.wheelX = cartRig.beamX + BEAM_T * 0.5f + wheelHalfW;
+	cartRig.wheelZ = glm::max(cartRig.length * 0.5f - 0.35f, 0.3f);
+
+	woodTexture = Texture("Textures/Temporal/pino.jpg");
+	woodLoaded = woodTexture.LoadTextureA();
+	printf("  CARRO  %.2f x %.2f x %.2f m (ancho x alto x largo)  circuito de %.1f m\n",
+		cartRig.width, hi.y - lo.y, cartRig.length, CartLoopLength());
+}
+
+void UpdateCarts(float dt)
+{
+	if (!cartRig.model) return;
+	cartDist += CART_SPEED * dt;
+	cartWheel -= glm::degrees(CART_SPEED * dt / WHEEL_R);   // rueda sin deslizar: omega = v / r
+}
+
+// ============================================================
+//  MUSICO DE TAIKO  -  animacion por KEYFRAMES (obligatoria en la propuesta)
+//  Modelo dividido en 10 piezas (Models/Animaciones/Taiko/Partes/): cuerpo, tambor y, por lado,
+//  brazo, antebrazo, mano y baqueta; cada pieza tiene su origen en la articulacion, asi que la jerarquia es
+//      cuerpo (inclinacion en la cadera) -> brazo (hombro) -> antebrazo (codo) -> mano (muñeca) -> baqueta
+//  Unidades del modelo: 1.0 = altura de la persona. El personaje mira a +X y su derecha es +Z.
+//  Ciclo de 72 pasos a 60 Hz = 1.2 s: golpe derecho, rebote, golpe izquierdo, rebote y reposo.
+//  Variables por cuadro clave: { hombroD, codoD, muñecaD, hombroI, codoI, muñecaI, inclinacion, piel }
+//  (grados; rotan alrededor del eje Z; + levanta la mano, - la baja). piel = hundimiento del tambor (0..1).
+// ============================================================
+const char* TAIKO_DIR   = "Models/Animaciones/Taiko/Partes/";
+const int TAIKO_COUNT = 3;                         // tres musicos en fila, con la misma animacion
+const glm::vec3 TAIKO_POS[TAIKO_COUNT] = {        // lado izquierdo de la calle, mirando al centro
+	glm::vec3(-(STREET_HALF_W - 2.1f), 0.0f, -4.4f), glm::vec3(-(STREET_HALF_W - 2.1f), 0.0f, -5.5f), glm::vec3(-(STREET_HALF_W - 2.1f), 0.0f, -6.6f) };
+const float TAIKO_YAW   = 0.0f;
+const float TAIKO_SCALE = 1.7f;                   // metros por unidad del modelo
+const glm::vec3 TAIKO_HIP(-0.20f, 0.48f, 0.0f);   // eje de la inclinacion del torso
+const float TAIKO_DRUM_PRESS = 0.03f;             // la piel se hunde 3 % al golpear
+
+struct TaikoArm { glm::vec3 shoulder, elbow, wrist, grip; };
+const TaikoArm TAIKO_ARM[2] = {
+	{ glm::vec3(-0.245f, 0.770f,  0.150f), glm::vec3(-0.225f, 0.640f,  0.190f), glm::vec3(-0.125f, 0.585f,  0.175f), glm::vec3(-0.100f, 0.5763f,  0.1411f) },  // derecha (+Z)
+	{ glm::vec3(-0.245f, 0.770f, -0.150f), glm::vec3(-0.225f, 0.640f, -0.190f), glm::vec3(-0.125f, 0.585f, -0.135f), glm::vec3(-0.100f, 0.5413f, -0.1182f) },  // izquierda (-Z)
+};
+// indices de taikoModel: 0 cuerpo, 1 tambor, y por lado (0 der, 1 izq): 2+4*lado = brazo, +1 antebrazo, +2 mano, +3 baqueta
+const char* TAIKO_FILES[10] = {
+	"taiko_cuerpo.glb", "taiko_tambor.glb",
+	"taiko_brazo_der.glb", "taiko_antebrazo_der.glb", "taiko_mano_der.glb", "taiko_baqueta_der.glb",
+	"taiko_brazo_izq.glb", "taiko_antebrazo_izq.glb", "taiko_mano_izq.glb", "taiko_baqueta_izq.glb" };
+Model* taikoModel[10] = { nullptr };
+KeyframePath taikoPath;
+float taikoAccum = 0.0f;
+int taikoPrevSeg = -1;
+ma_sound* taikoHitSound = nullptr;   // golpe de taiko (Audio/taiko_hit.wav, opcional)
+
+void LoadTaiko()
+{
+	for (int i = 0; i < 10; i++) {
+		taikoModel[i] = new Model();
+		taikoModel[i]->LoadModel(std::string(TAIKO_DIR) + TAIKO_FILES[i]);
+		if (!taikoModel[i]->IsLoaded()) { printf("NO CARGO parte del taiko: %s\n", TAIKO_FILES[i]); taikoModel[0] = nullptr; return; }
+	}
+	taikoPath = KeyframePath(
+		{
+			//  hombD  codoD  muneD  hombI  codoI  muneI  incl  piel
+			{   0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, 0.0f },  // 0 reposo
+			{  28.0f, 22.0f,  8.0f,  0.0f,  0.0f,  0.0f, -2.0f, 0.0f },  // 1 brazo derecho arriba
+			{   4.0f,  0.0f,-20.0f,  0.0f,  0.0f,  0.0f,  4.0f, 1.0f },  // 2 GOLPE derecho
+			{  14.0f, 10.0f, -4.0f,  0.0f,  0.0f,  0.0f,  0.0f, 0.0f },  // 3 rebote derecho
+			{   0.0f,  0.0f,  0.0f, 26.0f, 20.0f,  8.0f, -2.0f, 0.0f },  // 4 brazo izquierdo arriba
+			{   0.0f,  0.0f,  0.0f,  3.0f,  0.0f,-12.0f,  4.0f, 1.0f },  // 5 GOLPE izquierdo
+			{   0.0f,  0.0f,  0.0f, 12.0f,  8.0f, -4.0f,  0.0f, 0.0f },  // 6 rebote izquierdo
+			{   0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, 0.0f },  // 7 = 0, cierra el ciclo
+		},
+		{ 12, 9, 7, 10, 9, 7, 18 });   // suma 72 pasos = 1.2 s
+}
+
+void UpdateTaiko(float dt)
+{
+	if (!taikoModel[0]) return;
+	taikoAccum = glm::min(taikoAccum + dt, 0.25f);          // paso fijo de 60 Hz: misma velocidad con cualquier FPS
+	while (taikoAccum >= 1.0f / 60.0f) {
+		taikoAccum -= 1.0f / 60.0f;
+		taikoPath.Step();
+		int seg = taikoPath.Segment();
+		if (seg != taikoPrevSeg) {
+			taikoPrevSeg = seg;
+			if ((seg == 2 || seg == 5) && taikoHitSound) {   // cuadro de impacto: suena el golpe
+				ma_sound_seek_to_pcm_frame(taikoHitSound, 0);
+				ma_sound_start(taikoHitSound);
+			}
+		}
+	}
+}
+
+// ============================================================
+//  PILETA DEL KINGYO-SUKUI + PECES + DUENOS
+//  Pileta de madera (tina de duelas) con agua translucida que ondea (shader), 8 peces dorados y dos
+//  personas en kimono que atienden el puesto.
+//  Cada pez sigue una curva de Lissajous  x = A sin(a t + d),  z = B sin(b t)  con a != b (la ruta no se repite),
+//  mira hacia su velocidad (atan2) y su aleta oscila a 6 Hz: la cola se dobla en el vertex shader.
+// ============================================================
+const glm::vec3 POOL_C(STREET_HALF_W - 2.1f, 0.0f, 4.5f);   // centro de la pileta (lado derecho de la calle)
+const float POOL_R       = 0.70f;           // radio interior (m)
+const float POOL_H       = 0.30f;           // altura de la pared
+const float POOL_WATER_Y = 0.24f;           // nivel del agua
+const int   FISH_COUNT   = 8;
+const float FISH_LEN     = 0.18f;           // largo de un pez de tamano 1 (m)
+const float FISH_TAIL_HZ = 6.0f;            // frecuencia de la aleta (propuesta: 6 Hz)
+const float FISH_TAIL_DEG = 20.0f;          // amplitud de la aleta (propuesta: +-20 grados)
+
+struct Fish {
+	float A, B, a, b, delta;   // Lissajous
+	float depth, size;
+	glm::vec3 tint;
+	float ft = 0.0f;            // tiempo propio del pez (corre al doble de velocidad cuando huye)
+	int state = 0;              // 0 nada, 1 salta al tazon, 2 esta en el tazon (reaparece despues)
+	float jt = 0.0f, scared = 0.0f, respawn = 0.0f;
+	glm::vec3 jfrom = glm::vec3(0.0f);
+};
+std::vector<Fish> fish;
+Model* fishModel = nullptr;
+glm::vec3 fishCenter(0.0f);
+float fishScale = 1.0f, fishTailZ0 = 0.0f, fishTailZ1 = 0.0f, fishTailAmp = 0.0f;
+
+struct Owner {
+	const char* file;
+	float height;
+	float x, z, yaw;
+	float phase;               // desfase de la animacion de reposo
+	Model* model = nullptr;
+	glm::vec3 center = glm::vec3(0.0f);
+	float minY = 0.0f, scale = 1.0f;
+};
+// Los dos duenos flanquean la pileta, mirando hacia el centro de la calle (-X). yaw = -90 si el frente del modelo es +Z.
+std::vector<Owner> owners = {
+	{ "Models/kimono_nagase.glb",    1.55f, STREET_HALF_W - 0.95f, 5.1f, -90.0f, 0.0f },
+	{ "Models/toda_yuki_kimono.glb", 1.50f, STREET_HALF_W - 0.95f, 3.9f, -90.0f, 2.1f },
+};
+
+void LoadPool()
+{
+	fishModel = new Model();
+	fishModel->LoadModel("Models/Animaciones/Goldfish game/goldfish.glb");
+	if (!fishModel->IsLoaded()) { printf("NO CARGO el pez dorado\n"); fishModel = nullptr; }
+	else {
+		glm::vec3 mn = fishModel->GetBoundsMin(), mx = fishModel->GetBoundsMax();
+		fishCenter = 0.5f * (mn + mx);
+		fishScale = FISH_LEN / (mx.z - mn.z);              // el pez mide 95.6 unidades a lo largo de Z (cabeza en +Z)
+		fishTailZ0 = mn.z + 0.30f * (mx.z - mn.z);        // la cola empieza a doblarse a 30 % del largo desde la cola
+		fishTailZ1 = mn.z;
+		fishTailAmp = (fishTailZ0 - fishTailZ1) * tanf(glm::radians(FISH_TAIL_DEG));  // desplazamiento de la punta
+	}
+
+	std::mt19937 rng(7);
+	auto U = [&](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); };
+	const glm::vec3 tints[4] = { glm::vec3(1.0f), glm::vec3(1.0f, 0.82f, 0.65f), glm::vec3(1.0f, 0.62f, 0.52f), glm::vec3(1.0f, 0.95f, 0.85f) };
+	for (int i = 0; i < FISH_COUNT; i++) {
+		Fish f;
+		f.A = U(0.18f, 0.36f); f.B = U(0.18f, 0.36f);
+		f.a = U(0.45f, 0.90f); f.b = f.a * U(1.15f, 1.45f);       // a != b
+		f.delta = U(0.0f, 2.0f * PI_F);
+		f.depth = U(0.08f, 0.17f); f.size = U(0.8f, 1.2f);
+		f.tint = tints[i % 4];
+		fish.push_back(f);
+	}
+
+	// Vendedores: uno detras de cada puesto (stands ids 11, 12, 13). Se reparten los NPC de VENDOR_FILES por turnos;
+	// para agregar personajes nuevos basta con anadirlos a esa lista (nombre del .glb y alto en metros).
+	static const struct { const char* file; float height; } VENDOR_FILES[] = {
+		{ "Models/toda_yuki_kimono.glb", 1.50f },
+		{ "Models/kimono_nagase.glb",    1.55f },
+		{ "Models/geisha_in_a_satin_floral_kimono.glb", 1.55f },
+		{ "Models/morgans_pink_lobster_kimono.glb",     1.50f },
+	};
+	const int nVendorModels = (int)(sizeof(VENDOR_FILES) / sizeof(VENDOR_FILES[0]));
+	int vi = 0;
+	for (const Prop& pr : props) {
+		if (pr.id < 11 || pr.id > 13) continue;
+		float outward = (pr.xOff >= 0.0f) ? 1.0f : -1.0f;        // hacia la pared, detras del mostrador
+		const auto& vf = VENDOR_FILES[vi % nVendorModels];
+		owners.push_back({ vf.file, vf.height, pr.xOff + 0.3f * outward, pr.z, pr.yaw, 0.9f * vi });
+		vi++;
+	}
+
+	std::map<std::string, Model*> npcCache;   // cada .glb se carga una sola vez
+	for (Owner& o : owners) {
+		auto it = npcCache.find(o.file);
+		if (it == npcCache.end()) {
+			Model* m = new Model();
+			m->LoadModel(o.file);
+			it = npcCache.emplace(o.file, m).first;
+		}
+		o.model = it->second;
+		if (!o.model->IsLoaded()) { printf("NO CARGO: %s\n", o.file); o.model = nullptr; continue; }
+		glm::vec3 mn = o.model->GetBoundsMin(), mx = o.model->GetBoundsMax();
+		o.center = 0.5f * (mn + mx);
+		o.minY = mn.y;
+		o.scale = o.height / (mx.y - mn.y);
+	}
+}
+
+// ============================================================
+//  JUEGO KINGYO-SUKUI (animacion 5: parametrica + interaccion)
+//  Cerca de la pileta, E inicia la partida: la camara se desliza a una vista desde arriba, el cursor se libera y
+//  el mouse mueve la red (poi). Clic izquierdo (mantenido) baja la red al agua. Partida de 60 s con marcador.
+//   - Los peces nadan con sus curvas de Lissajous (ft = tiempo propio del pez).
+//   - Si la red se acerca a menos de FLEE_R y se mueve rapido, el pez se asusta: nada al doble de velocidad 1.2 s.
+//   - Si la red esta abajo y un pez tranquilo queda a menos de CATCH_R, lo atrapa: salta en parabola (0.6 s) al tazon.
+//   - Al terminar la partida se muestra el resultado 3.5 s y la camara regresa al lugar donde estabas. ESC cancela.
+// ============================================================
+enum GameState { GS_IDLE, GS_ENTER, GS_PLAY, GS_RESULT, GS_LEAVE };
+GameState gameState = GS_IDLE;
+float gameT = 0.0f, gameTimeLeft = 60.0f, gameSecs = 60.0f;
+int gameScore = 0, bowlCount = 0;
+bool autoGame = false;                       // pruebas: una "IA" mueve la red (--gameshot)
+const float GAME_SECS = 60.0f, GAME_ENTER_SECS = 0.9f, GAME_RESULT_SECS = 3.5f, GAME_NEAR_R = 3.2f;
+const float NET_R = 0.11f, FLEE_R = 0.15f, CATCH_R = 0.09f, FLEE_SPEED = 0.55f;   // se asustan si la red va a mas de 0.55 m/s
+const float JUMP_SECS = 0.6f, JUMP_H = 0.45f, POOL_PLAY_R = 0.58f;
+const glm::vec3 BOWL_C = POOL_C + glm::vec3(-1.05f, 0.0f, 0.35f);   // tazon junto a la pileta, del lado de la calle
+const float BOWL_R = 0.20f, BOWL_H = 0.13f;
+
+struct CamPose { glm::vec3 pos; float yaw, pitch; };
+CamPose camSaved = { glm::vec3(0.0f), 0.0f, 0.0f };
+const CamPose camGame = { POOL_C + glm::vec3(0.0f, 1.45f, 1.05f), -90.0f, -53.5f };   // vista desde arriba de la pileta
+
+glm::vec3 netPos = POOL_C;                   // (x, z) de la red sobre el agua
+float netY = POOL_WATER_Y + 0.12f, netSpeed = 0.0f;
+bool netDown = false;
+
+glm::vec3 FishPos(const Fish& f, float* yawOut)
+{
+	float x = f.A * sinf(f.a * f.ft + f.delta), z = f.B * sinf(f.b * f.ft);
+	float vx = f.A * f.a * cosf(f.a * f.ft + f.delta), vz = f.B * f.b * cosf(f.b * f.ft);
+	if (yawOut) *yawOut = atan2f(vx, vz);
+	return POOL_C + glm::vec3(x, f.depth + 0.012f * sinf(1.3f * f.ft), z);
+}
+
+// Punto del plano del agua bajo el cursor (rayo desde la camara)
+glm::vec3 MouseOnWater(const glm::mat4& proj, const glm::mat4& view)
+{
+	double mx, my; int ww, wh;
+	mainWindow.getCursor(&mx, &my);
+	mainWindow.getWindowSize(&ww, &wh);
+	float nx = 2.0f * (float)mx / ww - 1.0f, ny = 1.0f - 2.0f * (float)my / wh;
+	glm::mat4 inv = glm::inverse(proj * view);
+	glm::vec4 a = inv * glm::vec4(nx, ny, -1.0f, 1.0f), b = inv * glm::vec4(nx, ny, 1.0f, 1.0f);
+	glm::vec3 o = glm::vec3(a / a.w), d = glm::normalize(glm::vec3(b / b.w) - o);
+	if (fabsf(d.y) < 1e-4f) return glm::vec3(POOL_C.x, POOL_WATER_Y, POOL_C.z);
+	return o + d * ((POOL_WATER_Y - o.y) / d.y);
+}
+
+float Smooth01(float k) { k = glm::clamp(k, 0.0f, 1.0f); return k * k * (3.0f - 2.0f * k); }
+
+void SetCamLerp(const CamPose& a, const CamPose& b, float k)
+{
+	float dy = fmodf(b.yaw - a.yaw + 540.0f, 360.0f) - 180.0f;   // camino corto entre angulos
+	camera.setView(glm::mix(a.pos, b.pos, k), a.yaw + dy * k, glm::mix(a.pitch, b.pitch, k));
+}
+
+void StartGame()
+{
+	camSaved = { camera.getCameraPosition(), camera.getYaw(), camera.getPitch() };
+	gameState = GS_ENTER; gameT = 0.0f;
+	gameScore = 0; bowlCount = 0; gameTimeLeft = gameSecs;
+	for (Fish& f : fish) { f.state = 0; f.scared = 0.0f; }
+	netPos = POOL_C; netDown = false; netSpeed = 0.0f;
+	mainWindow.setCursorVisible(true);
+	mainWindow.escapeCloses = false;
+	printf("\nJUEGO: mueve el mouse para llevar la red, mantén el clic izquierdo para bajarla. ESC sale.\n");
+}
+
+void UpdateFish(float dt)
+{
+	for (Fish& f : fish) {
+		if (f.state == 0) {
+			f.ft += dt * (f.scared > 0.0f ? 2.0f : 1.0f);
+			f.scared = glm::max(0.0f, f.scared - dt);
+		}
+		else if (f.state == 1) {
+			f.jt += dt;
+			if (f.jt >= JUMP_SECS) { f.state = 2; f.respawn = 1.5f; bowlCount++; gameScore++; }
+		}
+		else if (f.state == 2) {
+			f.respawn -= dt;
+			if (f.respawn <= 0.0f) { f.state = 0; f.ft += 7.0f; f.scared = 0.0f; }   // un pez nuevo reaparece en otra parte de su curva
+		}
+	}
+}
+
+void UpdateGame(float dt, const glm::mat4& proj, bool ePressed)
+{
+	UpdateFish(dt);
+	glm::vec3 cp = camera.getCameraPosition();
+
+	switch (gameState) {
+	case GS_IDLE:
+		if (ePressed && glm::length(glm::vec2(cp.x - POOL_C.x, cp.z - POOL_C.z)) < GAME_NEAR_R) StartGame();
+		break;
+
+	case GS_ENTER:
+		gameT += dt;
+		SetCamLerp(camSaved, camGame, Smooth01(gameT / GAME_ENTER_SECS));
+		if (gameT >= GAME_ENTER_SECS) { gameState = GS_PLAY; gameT = 0.0f; }
+		break;
+
+	case GS_PLAY: {
+		gameTimeLeft -= dt;
+		glm::vec3 target; bool down;
+		if (autoGame) {                       // IA de prueba: persigue al pez tranquilo mas cercano y baja la red sobre el
+			target = netPos; down = false;
+			float best = 1e9f;
+			for (const Fish& f : fish) {
+				if (f.state != 0 || f.scared > 0.0f) continue;
+				glm::vec3 p = FishPos(f, nullptr);
+				float d = glm::length(glm::vec2(p.x - netPos.x, p.z - netPos.z));
+				if (d < best) { best = d; target = p; }
+			}
+			down = best < 0.05f;
+			glm::vec2 dir(target.x - netPos.x, target.z - netPos.z);
+			float len = glm::length(dir), step = glm::min(len, (best > 0.30f ? 0.60f : 0.40f) * dt);
+			if (len > 1e-5f) { dir = dir / len * step; target = glm::vec3(netPos.x + dir.x, 0.0f, netPos.z + dir.y); }
+			else target = netPos;
+		}
+		else {
+			target = MouseOnWater(proj, camera.calculateViewMatrix());
+			down = mainWindow.mouseDown();
+		}
+		glm::vec2 c(target.x - POOL_C.x, target.z - POOL_C.z);     // la red no sale de la pileta
+		float len = glm::length(c);
+		if (len > POOL_PLAY_R) c *= POOL_PLAY_R / len;
+		glm::vec3 np(POOL_C.x + c.x, 0.0f, POOL_C.z + c.y);
+		float inst = glm::length(glm::vec2(np.x - netPos.x, np.z - netPos.z)) / glm::max(dt, 1e-4f);
+		netSpeed = glm::mix(netSpeed, inst, 0.3f);
+		netPos = np; netDown = down;
+		netY = glm::mix(netY, down ? POOL_WATER_Y - 0.03f : POOL_WATER_Y + 0.12f, glm::min(1.0f, dt * 14.0f));
+
+		for (Fish& f : fish) {
+			if (f.state != 0) continue;
+			glm::vec3 p = FishPos(f, nullptr);
+			float d = glm::length(glm::vec2(p.x - netPos.x, p.z - netPos.z));
+			if (d < FLEE_R && netSpeed > FLEE_SPEED) f.scared = 1.2f;                // red rapida cerca: huye al doble de velocidad
+			if (netDown && netY < POOL_WATER_Y + 0.01f && d < CATCH_R && f.scared <= 0.0f) {
+				f.state = 1; f.jt = 0.0f; f.jfrom = p;                               // atrapado: salta al tazon
+			}
+		}
+		if (gameTimeLeft <= 0.0f) { gameTimeLeft = 0.0f; gameState = GS_RESULT; gameT = 0.0f; printf("Puntos: %d\n", gameScore); }
+		else if (KeyPressedOnce(GLFW_KEY_ESCAPE)) { gameState = GS_LEAVE; gameT = 0.0f; }
+		break; }
+
+	case GS_RESULT:
+		gameT += dt;
+		netY = glm::mix(netY, POOL_WATER_Y + 0.12f, glm::min(1.0f, dt * 6.0f));
+		if (gameT >= GAME_RESULT_SECS || KeyPressedOnce(GLFW_KEY_ESCAPE)) { gameState = GS_LEAVE; gameT = 0.0f; }
+		break;
+
+	case GS_LEAVE:
+		gameT += dt;
+		SetCamLerp(camGame, camSaved, Smooth01(gameT / GAME_ENTER_SECS));
+		if (gameT >= GAME_ENTER_SECS) {
+			gameState = GS_IDLE; gameT = 0.0f; autoGame = false;
+			mainWindow.setCursorVisible(false);
+			mainWindow.escapeCloses = true;
+		}
+		break;
+	}
+}
+
+// ============================================================
+//  GENTE CAMINANDO (animacion de esqueleto "horneada")
+//  Los .glb de Models/Caminantes/ salen de tools/bake_skinned_glb.py: cada cuadro del ciclo de caminata es una malla.
+//  El motor dibuja el cuadro que toca segun el tiempo; la caminata va "en su lugar" y el programa los mueve por un
+//  circuito en las orillas de la calle (carril izquierdo hacia el templo, derecho de regreso), entre los carros y los puestos.
+//  La velocidad de la animacion se ajusta a la del paso para que no patinen:  rapidez = v / velocidad_de_paso.
+// ============================================================
+struct WalkerType {
+	const char* file;
+	float height;         // alto en metros
+	float strideSpeed;    // m/s que avanza el personaje en la animacion original (movimiento de la cadera)
+	float animSecs;       // duracion del ciclo
+	int frames;           // cuadros horneados
+	Model* model = nullptr;
+	int P = 1;            // mallas por cuadro
+	glm::vec3 center = glm::vec3(0.0f);
+	float minY = 0.0f, scale = 1.0f;
+};
+WalkerType walkerTypes[4] = {
+	{ "Models/Caminantes/caminante_hombre_japones.glb", 1.72f, 1.41f, 1.167f, 24 },
+	{ "Models/Caminantes/caminante_mr_man.glb",         1.78f, 1.20f, 1.033f, 24 },
+	{ "Models/Caminantes/caminante_hombre2.glb",        1.72f, 1.40f, 1.000f, 24 },
+	{ "Models/Caminantes/caminante_mujer.glb",          1.62f, 1.40f, 1.000f, 24 },
+};
+struct Walker { int type; float s0, speed, phase, lateral; };
+std::vector<Walker> walkers;
+const int   WALKER_COUNT = 12;
+const float WALK_LANE = 4.3f, WALK_Z_FAR = -23.5f, WALK_Z_NEAR = 20.5f;
+
+// Circuito generico: recta izquierda (-Z), media vuelta, recta derecha (+Z), media vuelta. Devuelve (x, 0, z) y la tangente (x, z).
+float LoopLen(float lane, float zFar, float zNear) { return 2.0f * (zNear - zFar) + 2.0f * PI_F * lane; }
+glm::vec3 LoopPos(float s, float lane, float zFar, float zNear, glm::vec2& tan)
+{
+	const float straight = zNear - zFar, arc = PI_F * lane, L = LoopLen(lane, zFar, zNear);
+	s = fmodf(s, L); if (s < 0.0f) s += L;
+	glm::vec2 pos;
+	if (s < straight)                  { pos = glm::vec2(-lane, zNear - s);  tan = glm::vec2(0.0f, -1.0f); }
+	else if (s < straight + arc)       { float f = (s - straight) / lane;  pos = glm::vec2(-lane * cosf(f), zFar - lane * sinf(f));  tan = glm::vec2(sinf(f), -cosf(f)); }
+	else if (s < 2.0f * straight + arc){ pos = glm::vec2(lane, zFar + (s - straight - arc));  tan = glm::vec2(0.0f, 1.0f); }
+	else                               { float f = (s - 2.0f * straight - arc) / lane;  pos = glm::vec2(lane * cosf(f), zNear + lane * sinf(f));  tan = glm::vec2(-sinf(f), cosf(f)); }
+	return glm::vec3(pos.x, 0.0f, pos.y);
+}
+
+void LoadWalkers()
+{
+	for (WalkerType& wt : walkerTypes) {
+		wt.model = new Model();
+		wt.model->LoadModel(wt.file, -1e30f, true);   // conservar una malla por cuadro
+		if (!wt.model->IsLoaded()) { printf("NO CARGO caminante: %s\n", wt.file); wt.model = nullptr; continue; }
+		wt.P = (int)wt.model->GetMeshCount() / wt.frames;
+		glm::vec3 mn = wt.model->GetBoundsMin(), mx = wt.model->GetBoundsMax();
+		wt.center = 0.5f * (mn + mx);
+		wt.minY = mn.y;
+		wt.scale = wt.height / (mx.y - mn.y);
+	}
+	std::mt19937 rng(21);
+	auto U = [&](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); };
+	const float L = LoopLen(WALK_LANE, WALK_Z_FAR, WALK_Z_NEAR);
+	for (int i = 0; i < WALKER_COUNT; i++)
+		walkers.push_back({ i % 4, i * L / WALKER_COUNT + U(-2.0f, 2.0f), U(0.85f, 1.15f), U(0.0f, 1.0f), U(-0.30f, 0.0f) });
+}
+
+// Faroles del templo: cuelgan de los bordes de sus aleros (coordenadas del modelo del templo, antes de escalarlo).
+// Alturas de los aleros medidas sobre la malla: 620, 1340 y 1940 de 3738; el frente del templo es +Z.
+void AddTempleLanterns()
+{
+	const Prop* tp = nullptr;
+	for (const Prop& pr : props) if (pr.id == 7) tp = &pr;
+	if (!tp || !tp->model || !tp->model->IsLoaded()) return;
+	std::mt19937 rng(77);
+	std::uniform_real_distribution<float> rnd(0.0f, 2.0f * PI_F);
+	size_t before = lanterns.size();
+	auto add = [&](float x, float y, float z) {
+		Lantern l = { glm::vec3(tp->matrix * glm::vec4(x, y, z, 1.0f)), rnd(rng), rnd(rng) };
+		l.scale = 2.0f;
+		lanterns.push_back(l);
+	};
+	for (int k = 0; k < 7; k++) add(-800.0f + k * 266.7f, 620.0f, 775.0f);                 // alero 1: frente
+	for (int k = 0; k < 4; k++) { float z = 600.0f - k * 400.0f; add(-855.0f, 620.0f, z); add(855.0f, 620.0f, z); }   // alero 1: costados
+	for (int k = 0; k < 5; k++) add(-750.0f + k * 375.0f, 1340.0f, 725.0f);                // alero 2: frente
+	for (int k = 0; k < 3; k++) { float z = 450.0f - k * 450.0f; add(-825.0f, 1340.0f, z); add(825.0f, 1340.0f, z); }
+	for (int k = 0; k < 5; k++) add(-600.0f + k * 300.0f, 1940.0f, 560.0f);                // alero 3: frente
+	printf("  %d faroles colgados del templo\n", (int)(lanterns.size() - before));
+}
+
+// ============================================================
+//  INTERFAZ 2D (Textures/UI) Y CARTAS DE INFORMACION
+//  - El aviso hud_aviso_e.png aparece abajo al centro cuando hay algo con lo que interactuar (la pileta o un punto
+//    de informacion). En la pileta E inicia el juego; en los puntos de informacion E abre una carta flotante.
+//  - Cartas: Textures/Cards/card_<id>.png (hoy son provisionales: basta reemplazar el archivo, mismo nombre).
+//    La carta es un cartel que flota sobre el objeto, siempre de frente a la camara; se cierra con E o al alejarte.
+// ============================================================
+struct InfoPoint { const char* id; glm::vec3 pos; float radius, cardY, cardW; };
+InfoPoint infoPoints[] = {
+	{ "torii",    glm::vec3(0.0f, 0.0f, 27.0f),                         6.0f, 5.0f, 2.2f },   // entrada
+	{ "yamahoko", glm::vec3(0.0f),                                      5.0f, 6.8f, 2.4f },   // sigue al carro mas cercano
+	{ "taiko",    glm::vec3(0.0f),                                      3.8f, 2.8f, 1.8f },   // (se rellena con TAIKO_POS[1])
+	{ "faroles",  glm::vec3(STREET_HALF_W - 2.8f, 0.0f, 24.5f),         3.5f, 2.8f, 1.8f },   // farol de piedra de la entrada
+	{ "templo",   glm::vec3(0.0f, 0.0f, -33.5f),                        7.0f, 7.5f, 3.2f },
+	{ "yatai",    glm::vec3(STREET_HALF_W - 1.0f, 0.0f, 14.5f),         3.5f, 3.6f, 1.8f },   // puesto de fideos
+	{ "machiya",  glm::vec3(-(STREET_HALF_W + 3.4f), 0.0f, 2.5f),       5.5f, 4.5f, 2.2f },   // casa de dos pisos
+};
+const int INFO_COUNT = (int)(sizeof(infoPoints) / sizeof(infoPoints[0]));
+const int INFO_CART = 1;
+Texture cardTex[INFO_COUNT];
+bool cardOK[INFO_COUNT];
+std::string cardPath[INFO_COUNT];
+int infoNear = -1, infoOpen = -1;
+float infoT = 0.0f;
+glm::vec3 infoNearPos(0.0f), infoOpenPos(0.0f);
+
+Texture uiTiempo, uiPuntos, uiAviso, uiInstr, uiResult, uiDigitos;
+bool uiOK = false;
+
+void LoadUI()
+{
+	uiTiempo  = Texture("Textures/UI/hud_tiempo.png");        bool a = uiTiempo.LoadTextureA();
+	uiPuntos  = Texture("Textures/UI/hud_puntos.png");        bool b = uiPuntos.LoadTextureA();
+	uiAviso   = Texture("Textures/UI/hud_aviso_e.png");       bool c = uiAviso.LoadTextureA();
+	uiInstr   = Texture("Textures/UI/hud_instrucciones.png"); bool d = uiInstr.LoadTextureA();
+	uiResult  = Texture("Textures/UI/hud_resultado.png");     bool e = uiResult.LoadTextureA();
+	uiDigitos = Texture("Textures/UI/hud_digitos.png");       bool f = uiDigitos.LoadTextureA();
+	uiOK = a && b && c && d && e && f;
+	if (!uiOK) printf("Faltan imagenes de Textures/UI: el menu no se mostrara\n");
+	infoPoints[2].pos = TAIKO_POS[1];
+	for (int i = 0; i < INFO_COUNT; i++) {
+		cardPath[i] = std::string("Textures/Cards/card_") + infoPoints[i].id + ".png";
+		cardTex[i] = Texture(cardPath[i].c_str());
+		cardOK[i] = cardTex[i].LoadTextureA();
+	}
+}
+
+// Punto de informacion mas cercano dentro de su radio; abre/cierra la carta con E (la pileta tiene prioridad: ahi E es el juego)
+void UpdateInfo(float dt, bool ePressed)
+{
+	glm::vec3 cp = camera.getCameraPosition();
+	if (gameState != GS_IDLE) { infoNear = -1; infoOpen = -1; return; }
+	bool nearPool = glm::length(glm::vec2(cp.x - POOL_C.x, cp.z - POOL_C.z)) < GAME_NEAR_R;
+	auto cartPos = [&](float& dist) {          // posicion del carro mas cercano a la camara
+		glm::vec3 best(0.0f); dist = 1e9f;
+		for (int ci = 0; ci < CART_COUNT; ci++) {
+			float h; glm::vec3 p = CartPath(cartDist - ci * CART_GAP, h);
+			float d = glm::length(glm::vec2(cp.x - p.x, cp.z - p.z));
+			if (d < dist) { dist = d; best = p; }
+		}
+		return best;
+	};
+	infoNear = -1;
+	float bestD = 1e9f;
+	for (int i = 0; i < INFO_COUNT; i++) {
+		glm::vec3 p = infoPoints[i].pos; float d;
+		if (i == INFO_CART) p = cartPos(d);
+		else d = glm::length(glm::vec2(cp.x - p.x, cp.z - p.z));
+		if (d < infoPoints[i].radius && d < bestD) { bestD = d; infoNear = i; infoNearPos = p; }
+	}
+	if (nearPool) infoNear = -1;
+
+	if (infoOpen >= 0) {
+		if (infoOpen == INFO_CART) { float d; infoOpenPos = cartPos(d); }    // la carta acompana al carro
+		infoT += dt;
+		if (glm::length(glm::vec2(cp.x - infoOpenPos.x, cp.z - infoOpenPos.z)) > infoPoints[infoOpen].radius * 1.5f) infoOpen = -1;
+	}
+	if (ePressed && !nearPool) {
+		if (infoOpen >= 0) infoOpen = -1;
+		else if (infoNear >= 0) { infoOpen = infoNear; infoOpenPos = infoNearPos; infoT = 0.0f; }
+	}
+}
+
+// ============================================================
 //  MAIN
 // ============================================================
 // Guarda el framebuffer actual como .tga (24 bits). Sirve para revisar la escena sin depender de capturas de pantalla.
@@ -646,15 +1429,68 @@ const CamPreset AUTO_VIEWS[] = {
 	{ glm::vec3(0.0f, 24.0f, -14.0f),      -90.0f, -55.0f },   // 7 vista alta (mitad fondo)
 	{ glm::vec3(0.0f, EYE_HEIGHT,  10.0f), 180.0f,   4.0f },   // 8 lado izquierdo
 	{ glm::vec3(0.0f, EYE_HEIGHT,  10.0f),   0.0f,   4.0f },   // 9 lado derecho
+	{ glm::vec3(0.0f, 2.5f, -24.0f),        90.0f,   4.0f },   // 10 frente de los carros
+	{ glm::vec3(8.0f, 9.0f,  10.0f),      -133.0f, -23.0f },   // 11 carro desde arriba, 3/4
+	{ glm::vec3(0.0f, EYE_HEIGHT, 30.0f), -90.0f,   8.0f },   // 12 desde la entrada hacia los carros
+	{ glm::vec3(-0.6f, 1.5f, -5.5f),      180.0f,  -6.0f },   // 13 musico de taiko (de frente)
+	{ glm::vec3(-0.6f, 1.5f, -5.5f),      180.0f,  -6.0f },   // 14 (fase distinta de la animacion)
+	{ glm::vec3(-0.6f, 1.5f, -5.5f),      180.0f,  -6.0f },   // 15
+	{ glm::vec3(-0.6f, 1.5f, -5.5f),      180.0f,  -6.0f },   // 16
+	{ glm::vec3(-1.8f, 1.6f, -4.2f),     -141.0f, -16.0f },   // 17 musico, vista 3/4
+	{ glm::vec3(1.0f, 1.6f, 6.6f),        -36.0f, -22.0f },   // 18 pileta desde la calle
+	{ glm::vec3(3.7f, 2.3f, 6.3f),        -90.0f, -50.0f },   // 19 pileta desde arriba
+	{ glm::vec3(3.7f, 2.3f, 6.3f),        -90.0f, -50.0f },   // 20 (otra fase de la animacion)
+	{ glm::vec3(1.2f, 1.5f, 4.5f),          0.0f,  -3.0f },   // 21 pileta y duenos
+	{ glm::vec3(0.0f, 1.6f, 27.0f),       -90.0f,   3.0f },   // 22 carros hacia la entrada
+	{ glm::vec3(0.0f, 1.7f, -22.0f),      -90.0f,   5.0f },   // 23 templo al fondo
+	{ glm::vec3(-2.5f, 1.6f, 11.0f),      180.0f,   0.0f },   // 24 stands izquierdos
+	{ glm::vec3(2.5f, 1.6f, 6.0f),          0.0f,   0.0f },   // 25 stands derechos
+	{ glm::vec3(0.0f, 40.0f, 0.0f),       -90.0f, -89.0f },   // 26 circuito desde arriba
+	{ glm::vec3(-0.6f, 1.5f, -5.5f),      180.0f,  -6.0f },   // 27 tres taikos
+	{ glm::vec3(0.0f, 1.6f, 22.0f),       -90.0f,   2.0f },   // 28 calle con gente caminando
+	{ glm::vec3(0.0f, 2.2f, 8.0f),        -90.0f,  -4.0f },   // 29 idem, desde mas arriba
+	{ glm::vec3(0.0f, 1.7f, -26.0f),      -90.0f,  12.0f },   // 30 templo grande con sus faroles
+	{ glm::vec3(0.0f, 1.6f, 14.0f),         0.0f,   3.0f },   // 31 edificios del lado derecho
+	{ glm::vec3(0.0f, 1.6f, -10.0f),      180.0f,   3.0f },   // 32 edificios del lado izquierdo
+	{ glm::vec3(0.0f, 14.0f, -34.0f),     -90.0f, -18.0f },   // 33 templo desde arriba
+};
+
+// Tomas compuestas para capturas:  ProyectoFinal.exe --shots <carpeta> --views beauty [--size 1920 1080]
+const CamPreset BEAUTY_VIEWS[] = {
+	{ glm::vec3( 0.0f,  1.6f,  34.0f),  -90.0f,   6.0f },   //  0 entrada: el torii enmarca la calle
+	{ glm::vec3( 0.0f,  0.7f,  31.5f),  -90.0f,  24.0f },   //  1 torii desde abajo
+	{ glm::vec3( 0.0f,  1.7f,  12.0f),  -90.0f,   1.0f },   //  2 calle con faroles que se alejan
+	{ glm::vec3( 0.0f,  1.5f,   2.0f),  -90.0f,  32.0f },   //  3 cuerdas de faroles contra el cielo
+	{ glm::vec3( 3.2f,  1.6f,  -3.0f),  -49.0f,  -3.0f },   //  4 puesto de ramen
+	{ glm::vec3( 2.5f,  1.6f,  14.0f),  -33.0f,  -3.0f },   //  5 kiosco de flores
+	{ glm::vec3(-1.5f,  1.4f,  -3.0f), -130.0f,  -3.0f },   //  6 altar
+	{ glm::vec3( 0.5f,  1.6f,  12.0f),  -68.0f,   3.0f },   //  7 tiendas del lado derecho
+	{ glm::vec3( 0.0f, 30.0f,  40.0f),  -90.0f, -38.0f },   //  8 vista aerea general
+	{ glm::vec3(22.0f, 16.0f,  26.0f), -130.0f, -25.0f },   //  9 aerea 3/4
+	{ glm::vec3( 0.0f,  1.7f, -27.0f),   90.0f,   3.0f },   // 10 de regreso hacia la entrada
+	{ glm::vec3( 0.0f,  1.6f, -12.0f),  -90.0f,   3.0f },   // 11 torii interior y edificio del fondo
+	{ glm::vec3( 1.0f,  3.3f,  24.0f),  -90.0f,   6.0f },   // 12 faroles de cerca
 };
 
 int main(int argc, char** argv)
 {
 	const char* shotsDir = nullptr;
-	for (int i = 1; i + 1 < argc; i++)
-		if (strcmp(argv[i], "--shots") == 0) shotsDir = argv[i + 1];
+	const char* gameShotDir = nullptr;   // --gameshot <carpeta>: prueba automatica del minijuego
+	int gsFrame = 0;
+	const char* cardShotDir = nullptr;   // --cardshot <carpeta>: prueba automatica de las cartas flotantes
+	int csFrame = 0;
+	float gsT0 = 0.0f;
+	bool beauty = false;
+	int winW = 1366, winH = 768;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--shots") == 0 && i + 1 < argc) shotsDir = argv[i + 1];
+		if (strcmp(argv[i], "--gameshot") == 0 && i + 1 < argc) gameShotDir = argv[i + 1];
+		if (strcmp(argv[i], "--cardshot") == 0 && i + 1 < argc) cardShotDir = argv[i + 1];
+		if (strcmp(argv[i], "--views") == 0 && i + 1 < argc && strcmp(argv[i + 1], "beauty") == 0) beauty = true;
+		if (strcmp(argv[i], "--size") == 0 && i + 2 < argc) { winW = atoi(argv[i + 1]); winH = atoi(argv[i + 2]); }
+	}
 	int shotFrame = 0;
-	mainWindow = Window(1366, 768);
+	mainWindow = Window(winW, winH);
 	if (mainWindow.Initialise() != 0)
 		return 1;
 
@@ -674,10 +1510,28 @@ int main(int argc, char** argv)
 		}
 	}
 
+	// Golpe de taiko con posicion 3D (opcional: si no existe Audio/taiko_hit.wav no suena)
+	ma_sound taikoHit;
+	bool taikoHitLoaded = false;
+	if (audioReady && ma_sound_init_from_file(&audioEngine, "Audio/taiko_hit.wav", MA_SOUND_FLAG_DECODE, NULL, NULL, &taikoHit) == MA_SUCCESS) {
+		ma_sound_set_position(&taikoHit, TAIKO_POS[1].x + 0.3f * TAIKO_SCALE, 0.9f, TAIKO_POS[1].z);
+		ma_sound_set_min_distance(&taikoHit, 1.5f);
+		ma_sound_set_max_distance(&taikoHit, 25.0f);
+		ma_sound_set_attenuation_model(&taikoHit, ma_attenuation_model_inverse);
+		taikoHitSound = &taikoHit;
+		taikoHitLoaded = true;
+	}
+
 	CreateObjects();
 	CreateShaders();
 	InitLanterns();
 	LoadProps();
+	AddTempleLanterns();
+	LoadCart();
+	LoadTaiko();
+	LoadPool();
+	LoadWalkers();
+	LoadUI();
 
 	SetCameraPreset(CAM_PRESETS[0]);
 
@@ -693,12 +1547,13 @@ int main(int argc, char** argv)
 	bool showMarkers = false; // tecla M: numeros de los modelos + muestrario de texturas
 
 	// ─── Skybox nocturno (generado desde el HDRI con tools/hdri_to_cubemap.py) ───
-	// Orden GL: +X -X -Y +Y +Z -Z = rt lf dn up bk ft
+	// Orden de los indices del cubemap en OpenGL: +X, -X, +Y, -Y, +Z, -Z  =  rt, lf, up, dn, bk, ft
+	// (el script tools/hdri_to_cubemap.py nombra up = +Y y dn = -Y)
 	std::vector<std::string> skyboxFaces;
 	skyboxFaces.push_back("Textures/Skybox/rt.png");
 	skyboxFaces.push_back("Textures/Skybox/lf.png");
-	skyboxFaces.push_back("Textures/Skybox/dn.png");
 	skyboxFaces.push_back("Textures/Skybox/up.png");
+	skyboxFaces.push_back("Textures/Skybox/dn.png");
 	skyboxFaces.push_back("Textures/Skybox/bk.png");
 	skyboxFaces.push_back("Textures/Skybox/ft.png");
 	skybox = Skybox(skyboxFaces);
@@ -738,17 +1593,43 @@ int main(int argc, char** argv)
 		if (KeyPressedOnce(GLFW_KEY_V)) freeCamera = !freeCamera;
 		if (KeyPressedOnce(GLFW_KEY_M)) showMarkers = !showMarkers;
 		if (KeyPressedOnce(GLFW_KEY_L)) flashlightOn = !flashlightOn;
-		if (KeyPressedOnce(GLFW_KEY_1)) SetCameraPreset(CAM_PRESETS[0]);
-		if (KeyPressedOnce(GLFW_KEY_2)) SetCameraPreset(CAM_PRESETS[1]);
-		if (KeyPressedOnce(GLFW_KEY_3)) SetCameraPreset(CAM_PRESETS[2]);
+		if (KeyPressedOnce(GLFW_KEY_1) && gameState == GS_IDLE) SetCameraPreset(CAM_PRESETS[0]);
+		if (KeyPressedOnce(GLFW_KEY_2) && gameState == GS_IDLE) SetCameraPreset(CAM_PRESETS[1]);
+		if (KeyPressedOnce(GLFW_KEY_3) && gameState == GS_IDLE) SetCameraPreset(CAM_PRESETS[2]);
 
-		camera.keyControl(mainWindow.getsKeys(), deltaTime);
-		camera.mouseControl(mainWindow.getXChange(), mainWindow.getYChange());
-		ConstrainCamera();
+		if (gameShotDir) {                    // prueba automatica del juego: colocar al jugador junto a la pileta e iniciar
+			gsFrame++;
+			if (gsFrame == 2) camera = Camera(glm::vec3(POOL_C.x - 1.6f, EYE_HEIGHT, POOL_C.z + 1.2f), glm::vec3(0.0f, 1.0f, 0.0f), -20.0f, -25.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+			if (gsFrame == 40) { gameSecs = 14.0f; autoGame = true; StartGame(); }
+			if (gsFrame == 40) gsT0 = (float)glfwGetTime();
+		}
+		if (cardShotDir) {                    // prueba automatica de las cartas: acercarse al taiko y pulsar E
+			csFrame++;
+			if (csFrame == 2) camera = Camera(glm::vec3(-3.3f, EYE_HEIGHT, -3.2f), glm::vec3(0.0f, 1.0f, 0.0f), -138.5f, 4.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+			if (csFrame == 40) camera = Camera(glm::vec3(-3.3f, EYE_HEIGHT, -3.2f), glm::vec3(0.0f, 1.0f, 0.0f), 70.7f, 55.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+		}
+		bool ePressed = KeyPressedOnce(GLFW_KEY_E) || (cardShotDir && csFrame == 22);
+		UpdateGame(deltaTime, projection, ePressed);
+		UpdateInfo(deltaTime, ePressed);
+		if (gameState == GS_IDLE) {
+			camera.keyControl(mainWindow.getsKeys(), deltaTime);
+			camera.mouseControl(mainWindow.getXChange(), mainWindow.getYChange());
+			ConstrainCamera();
+		}
+		else { mainWindow.getXChange(); mainWindow.getYChange(); }   // durante el juego la camara es fija y el mouse mueve la red
+
+		UpdateCarts(deltaTime);
+		UpdateTaiko(deltaTime);
+
+		if (audioReady) {   // el oyente sigue a la camara: el volumen y el paneo cambian con la posicion
+			glm::vec3 cp = camera.getCameraPosition(), cd = camera.getCameraDirection();
+			ma_engine_listener_set_position(&audioEngine, 0, cp.x, cp.y, cp.z);
+			ma_engine_listener_set_direction(&audioEngine, 0, cd.x, cd.y, cd.z);
+		}
 
 		// --- Luz de luna (fija) ---
 		mainLight = DirectionalLight(MOON_COLOR.r, MOON_COLOR.g, MOON_COLOR.b,
-			MOON_AMBIENT, MOON_DIFFUSE, MOON_DIR.x, MOON_DIR.y, MOON_DIR.z);
+			moonAmbientOverride >= 0.0f ? moonAmbientOverride : MOON_AMBIENT, MOON_DIFFUSE, MOON_DIR.x, MOON_DIR.y, MOON_DIR.z);
 
 		// --- Luces de los 8 faroles mas cercanos a la camara ---
 		glm::vec3 camPos = camera.getCameraPosition();
@@ -760,11 +1641,11 @@ int main(int argc, char** argv)
 			[&](int a, int b) { return dist2(a) < dist2(b); });
 		for (unsigned int i = 0; i < pointLightCount; i++) {
 			const Lantern& l = lanterns[order[i]];
-			float I = 1.9f * LanternFlicker(l, t); // I0 * (0.92 + 0.08 ruido)
+			float I = 2.5f * (1.0f + 0.6f * (l.scale - 1.0f)) * LanternFlicker(l, t); // I0 * (0.92 + 0.08 ruido)
 			glm::vec3 p = glm::vec3(LanternPivotMatrix(l, t) *
-				glm::vec4(0.0f, -(LANTERN_CORD_L + LANTERN_BODY_H * 0.5f), 0.0f, 1.0f));
+				glm::vec4(0.0f, -(LANTERN_CORD_L + LANTERN_BODY_H * 0.5f) * l.scale, 0.0f, 1.0f));
 			pointLights[i] = PointLight(LANTERN_COLOR.r, LANTERN_COLOR.g, LANTERN_COLOR.b,
-				0.02f, I, p.x, p.y, p.z, 1.0f, 0.35f, 0.12f);
+				0.02f, I, p.x, p.y, p.z, 1.0f, 0.22f, 0.08f);
 		}
 
 		// --- Limpiar + skybox ---
@@ -789,7 +1670,7 @@ int main(int argc, char** argv)
 
 		glUniform1f(uniformAlpha, 1.0f);
 		glUniform1i(uniformNoLighting, 0);
-		glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), FOG_DENSITY);
+		glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), fogDensityOverride >= 0.0f ? fogDensityOverride : FOG_DENSITY);
 		glUniform3f(shaderList[0].GetUniformLocation("fogColor"), FOG_COLOR.r, FOG_COLOR.g, FOG_COLOR.b);
 		glUniformMatrix4fv(uniformProjection, 1, GL_FALSE, glm::value_ptr(projection));
 		glUniformMatrix4fv(uniformView, 1, GL_FALSE, glm::value_ptr(camera.calculateViewMatrix()));
@@ -850,6 +1731,224 @@ int main(int argc, char** argv)
 		glEnable(GL_CULL_FACE);
 		plainTexture.UseTexture();
 
+		// Carros: cuerpo (.glb) + 2 vigas longitudinales + 4 ruedas de madera, en circuito
+		if (cartRig.model) {
+			for (int ci = 0; ci < CART_COUNT; ci++) {
+				float heading;
+				glm::vec3 cp = CartPath(cartDist - ci * CART_GAP, heading);
+				glm::mat4 base = glm::translate(glm::mat4(1.0f), cp);
+				base = glm::rotate(base, glm::radians(heading), glm::vec3(0.0f, 1.0f, 0.0f));
+
+				glDisable(GL_CULL_FACE);
+				setColor(1.0f, 1.0f, 1.0f);
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(base * cartRig.bodyMatrix));
+				cartRig.model->RenderModel(uniformColor);
+				glEnable(GL_CULL_FACE);
+
+				woodTexture.UseTexture();
+				if (woodLoaded) setColor(1.0f, 1.0f, 1.0f); else setColor(0.40f, 0.26f, 0.14f);
+				Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+				float beamLen = 2.0f * cartRig.wheelZ + 0.5f;
+				for (int sx = -1; sx <= 1; sx += 2) {
+					drawBox(glm::translate(base, glm::vec3(sx * cartRig.beamX, WHEEL_R, 0.0f)),
+						glm::vec3(BEAM_T, BEAM_T, beamLen), glm::vec3(0.5f, 0.5f, 0.5f));
+					for (int sz = -1; sz <= 1; sz += 2) {
+						glm::mat4 w = glm::translate(base, glm::vec3(sx * cartRig.wheelX, WHEEL_R, sz * cartRig.wheelZ));
+						w = glm::rotate(w, glm::radians(cartWheel), glm::vec3(1.0f, 0.0f, 0.0f));
+						w = glm::scale(w, glm::vec3(WHEEL_R));
+						drawMesh(MESH_RUEDA, w);
+					}
+				}
+			}
+			plainTexture.UseTexture();
+		}
+
+		// Musico de taiko: jerarquia cuerpo -> brazo -> antebrazo -> mano -> baqueta
+		for (int ti = 0; ti < TAIKO_COUNT && taikoModel[0]; ti++) {
+			glm::mat4 base = glm::translate(glm::mat4(1.0f), TAIKO_POS[ti]);
+			base = glm::rotate(base, glm::radians(TAIKO_YAW), glm::vec3(0.0f, 1.0f, 0.0f));
+			base = glm::scale(base, glm::vec3(TAIKO_SCALE));
+
+			glDisable(GL_CULL_FACE);
+			setColor(1.0f, 1.0f, 1.0f);
+			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+			auto part = [&](int i, const glm::mat4& m) {
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+				taikoModel[i]->RenderModel(uniformColor);
+			};
+			const glm::vec3 Zaxis(0.0f, 0.0f, 1.0f);
+
+			// tambor: la piel se hunde un poco al golpear
+			part(1, glm::scale(base, glm::vec3(1.0f, 1.0f - TAIKO_DRUM_PRESS * taikoPath[7], 1.0f)));
+
+			// torso: se inclina sobre la cadera y arrastra a los brazos
+			glm::mat4 torso = glm::translate(base, TAIKO_HIP);
+			torso = glm::rotate(torso, glm::radians(taikoPath[6]), Zaxis);
+			torso = glm::translate(torso, -TAIKO_HIP);
+			part(0, torso);
+
+			for (int side = 0; side < 2; side++) {
+				const TaikoArm& a = TAIKO_ARM[side];
+				float sh = taikoPath[side * 3 + 0], el = taikoPath[side * 3 + 1], wr = taikoPath[side * 3 + 2];
+				int b = 2 + 4 * side;
+				glm::mat4 arm  = glm::rotate(glm::translate(torso, a.shoulder), glm::radians(sh), Zaxis);
+				glm::mat4 fore = glm::rotate(glm::translate(arm, a.elbow - a.shoulder), glm::radians(el), Zaxis);
+				glm::mat4 hand = glm::rotate(glm::translate(fore, a.wrist - a.elbow), glm::radians(wr), Zaxis);
+				glm::mat4 stick = glm::translate(hand, a.grip - a.wrist);
+				part(b + 0, arm);
+				part(b + 1, fore);
+				part(b + 2, hand);
+				part(b + 3, stick);
+			}
+			glEnable(GL_CULL_FACE);
+			plainTexture.UseTexture();
+		}
+
+		// Pileta del kingyo-sukui: tina de madera, fondo, peces y agua translucida
+		{
+			GLuint uSwayAmp = shaderList[0].GetUniformLocation("swayAmp");
+			GLuint uSwayZone = shaderList[0].GetUniformLocation("swayZone");
+			GLuint uSwayPhase = shaderList[0].GetUniformLocation("swayPhase");
+			GLuint uWaveAmp = shaderList[0].GetUniformLocation("waveAmp");
+			GLuint uWaveFreq = shaderList[0].GetUniformLocation("waveFreq");
+			GLuint uWaveTime = shaderList[0].GetUniformLocation("waveTime");
+			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+
+			// pared de madera
+			woodTexture.UseTexture();
+			if (woodLoaded) setColor(1.0f, 1.0f, 1.0f); else setColor(0.40f, 0.26f, 0.14f);
+			drawMesh(MESH_TINA, glm::translate(glm::mat4(1.0f), POOL_C));
+			// fondo
+			glDisable(GL_CULL_FACE);
+			plainTexture.UseTexture();
+			setColor(0.22f, 0.38f, 0.48f);
+			drawMesh(MESH_DISCO, glm::translate(glm::mat4(1.0f), POOL_C + glm::vec3(0.0f, 0.03f, 0.0f)));
+
+			// peces (nadan, huyen de la red o saltan al tazon)
+			if (fishModel) {
+				glUniform2f(uSwayZone, fishTailZ0, fishTailZ1);
+				for (size_t i = 0; i < fish.size(); i++) {
+					const Fish& f = fish[i];
+					if (f.state == 2) continue;                            // ya esta en el tazon
+					float yaw = 0.0f;
+					glm::vec3 pw;
+					if (f.state == 0) pw = FishPos(f, &yaw);
+					else {                                                  // salto en parabola hacia el tazon
+						float u = glm::min(f.jt / JUMP_SECS, 1.0f);
+						glm::vec3 dst = BOWL_C + glm::vec3(0.0f, BOWL_H * 0.6f, 0.0f);
+						pw = glm::mix(f.jfrom, dst, u) + glm::vec3(0.0f, 4.0f * JUMP_H * u * (1.0f - u), 0.0f);
+						yaw = atan2f(dst.x - f.jfrom.x, dst.z - f.jfrom.z);
+					}
+					glm::mat4 m = glm::translate(glm::mat4(1.0f), pw);
+					m = glm::rotate(m, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+					m = glm::scale(m, glm::vec3(fishScale * f.size));
+					m = glm::translate(m, -fishCenter);
+					setColor(f.tint.r, f.tint.g, f.tint.b);
+					glUniform1f(uSwayAmp, fishTailAmp * (f.state == 1 ? 1.6f : 1.0f));
+					glUniform1f(uSwayPhase, 2.0f * PI_F * FISH_TAIL_HZ * t + 1.7f * i);
+					glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+					fishModel->RenderModel();
+				}
+				// peces atrapados: dan vueltas dentro del tazon
+				for (int i = 0; i < glm::min(bowlCount, 10); i++) {
+					float ang = 0.8f * t + i * 0.63f;
+					glm::mat4 m = glm::translate(glm::mat4(1.0f), BOWL_C + glm::vec3(0.07f * cosf(ang), 0.07f, 0.07f * sinf(ang)));
+					m = glm::rotate(m, -ang, glm::vec3(0.0f, 1.0f, 0.0f));
+					m = glm::scale(m, glm::vec3(fishScale * 0.55f));
+					m = glm::translate(m, -fishCenter);
+					setColor(1.0f, 0.8f, 0.6f);
+					glUniform1f(uSwayAmp, fishTailAmp * 0.5f);
+					glUniform1f(uSwayPhase, 2.0f * PI_F * FISH_TAIL_HZ * t + i);
+					glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+					fishModel->RenderModel();
+				}
+				glUniform1f(uSwayAmp, 0.0f);
+			}
+
+			// tazon (donde caen los peces atrapados)
+			plainTexture.UseTexture();
+			setColor(0.78f, 0.12f, 0.10f);
+			drawMesh(MESH_TAZON, glm::translate(glm::mat4(1.0f), BOWL_C));
+			setColor(0.60f, 0.09f, 0.08f);
+			drawMesh(MESH_DISCO, glm::scale(glm::translate(glm::mat4(1.0f), BOWL_C + glm::vec3(0.0f, 0.015f, 0.0f)), glm::vec3(BOWL_R / POOL_R, 1.0f, BOWL_R / POOL_R)));
+
+			// red (poi): aro y mango de madera clara
+			bool netShown = (gameState == GS_PLAY || gameState == GS_RESULT);
+			if (netShown) {
+				setColor(0.88f, 0.76f, 0.52f);
+				drawMesh(MESH_ARO, glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(netPos.x, netY, netPos.z)), glm::vec3(NET_R)));
+				glm::mat4 hm = glm::translate(glm::mat4(1.0f), glm::vec3(netPos.x, netY, netPos.z + NET_R));
+				hm = glm::rotate(hm, glm::radians(-28.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+				drawBox(hm, glm::vec3(0.022f, 0.022f, 0.55f), glm::vec3(0.5f, 0.5f, 0.0f));
+			}
+
+			// agua: translucida y con ondas
+			plainTexture.UseTexture();   // el ultimo pez dejo enlazada su textura: el agua va lisa
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+			glDepthMask(GL_FALSE);
+			glUniform1f(uniformAlpha, 0.45f);
+			glUniform1f(uWaveAmp, 0.004f);
+			glUniform1f(uWaveFreq, 16.0f);
+			glUniform1f(uWaveTime, 2.0f * t);
+			setColor(0.35f, 0.65f, 0.90f);
+			drawMesh(MESH_DISCO, glm::translate(glm::mat4(1.0f), POOL_C + glm::vec3(0.0f, POOL_WATER_Y, 0.0f)));
+			glUniform1f(uWaveAmp, 0.0f);
+			if (netShown) {                                      // papel de la red: blanco translucido
+				glUniform1f(uniformAlpha, 0.5f);
+				setColor(1.0f, 1.0f, 1.0f);
+				drawMesh(MESH_DISCO, glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(netPos.x, netY, netPos.z)), glm::vec3(NET_R / POOL_R, 1.0f, NET_R / POOL_R)));
+			}
+			glUniform1f(uniformAlpha, 1.0f);
+			glDepthMask(GL_TRUE);
+			glDisable(GL_BLEND);
+			glEnable(GL_CULL_FACE);
+		}
+
+		// Duenos del puesto: figuras fusionadas (sin esqueleto) con una animacion de reposo: balanceo, respiracion
+		for (const Owner& o : owners) {
+			if (!o.model) continue;
+			float sway = 5.0f * sinf(0.7f * t + o.phase);          // grados
+			float bob  = 0.008f * sinf(1.4f * t + o.phase);
+			float br   = 1.0f + 0.006f * sinf(1.4f * t + o.phase);  // respiracion
+			glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(o.x, bob, o.z));
+			m = glm::rotate(m, glm::radians(o.yaw + sway), glm::vec3(0.0f, 1.0f, 0.0f));
+			m = glm::scale(m, glm::vec3(o.scale * br));
+			m = glm::translate(m, glm::vec3(-o.center.x, -o.minY, -o.center.z));
+			glDisable(GL_CULL_FACE);
+			setColor(1.0f, 1.0f, 1.0f);
+			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+			glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+			o.model->RenderModel(uniformColor);
+			glEnable(GL_CULL_FACE);
+		}
+		plainTexture.UseTexture();
+
+		// Gente caminando: se dibuja el cuadro de la caminata que toca segun el tiempo
+		{
+			glDisable(GL_CULL_FACE);
+			setColor(1.0f, 1.0f, 1.0f);
+			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
+			for (const Walker& w : walkers) {
+				const WalkerType& wt = walkerTypes[w.type];
+				if (!wt.model) continue;
+				glm::vec2 tan;
+				glm::vec3 p = LoopPos(w.s0 + w.speed * t, WALK_LANE, WALK_Z_FAR, WALK_Z_NEAR, tan);
+				p += glm::vec3(tan.y, 0.0f, -tan.x) * w.lateral;                      // se corre un poco hacia el centro
+				float yaw = atan2f(tan.x, tan.y);                                     // el modelo mira a +Z
+				float cyc = fmodf(t * (w.speed / wt.strideSpeed) / wt.animSecs + w.phase, 1.0f);
+				int frame = (int)(cyc * wt.frames) % wt.frames;
+				glm::mat4 m = glm::translate(glm::mat4(1.0f), p);
+				m = glm::rotate(m, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+				m = glm::scale(m, glm::vec3(wt.scale));
+				m = glm::translate(m, glm::vec3(-wt.center.x, -wt.minY, -wt.center.z));
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+				wt.model->RenderMeshRange(frame * wt.P, wt.P, uniformColor);
+			}
+			glEnable(GL_CULL_FACE);
+			plainTexture.UseTexture();
+		}
+
 		// Muestrario de texturas TEMPORALES contra el borde izquierdo (T1..T5), visible con M
 		if (showMarkers) {
 			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
@@ -878,19 +1977,46 @@ int main(int argc, char** argv)
 		// Faroles: cuerda (pendulo) + tapas oscuras (iluminadas) y cuerpo emisivo (noLighting)
 		for (const Lantern& l : lanterns) {
 			glm::mat4 pivot = LanternPivotMatrix(l, t);
-			float flick = LanternFlicker(l, t);
+			float flick = LanternFlicker(l, t), sc = l.scale;
+			const float cordL = LANTERN_CORD_L * sc, bodyH = LANTERN_BODY_H * sc, bodyR = LANTERN_BODY_R * sc;
 
 			setColor(0.05f, 0.04f, 0.03f);
-			drawBox(pivot, glm::vec3(0.015f, LANTERN_CORD_L, 0.015f), glm::vec3(0.5f, 1.0f, 0.5f));
-			glm::mat4 body = glm::translate(pivot, glm::vec3(0.0f, -LANTERN_CORD_L - LANTERN_BODY_H, 0.0f));
-			drawBox(body, glm::vec3(LANTERN_BODY_R * 1.6f, 0.04f, LANTERN_BODY_R * 1.6f), glm::vec3(0.5f, 0.0f, 0.5f));   // tapa inferior
-			drawBox(glm::translate(body, glm::vec3(0.0f, LANTERN_BODY_H, 0.0f)),
-				glm::vec3(LANTERN_BODY_R * 1.6f, 0.04f, LANTERN_BODY_R * 1.6f), glm::vec3(0.5f, 1.0f, 0.5f));           // tapa superior
+			drawBox(pivot, glm::vec3(0.015f * sc, cordL, 0.015f * sc), glm::vec3(0.5f, 1.0f, 0.5f));
+			glm::mat4 body = glm::translate(pivot, glm::vec3(0.0f, -cordL - bodyH, 0.0f));
+			drawBox(body, glm::vec3(bodyR * 1.6f, 0.04f * sc, bodyR * 1.6f), glm::vec3(0.5f, 0.0f, 0.5f));   // tapa inferior
+			drawBox(glm::translate(body, glm::vec3(0.0f, bodyH, 0.0f)),
+				glm::vec3(bodyR * 1.6f, 0.04f * sc, bodyR * 1.6f), glm::vec3(0.5f, 1.0f, 0.5f));           // tapa superior
 
 			glUniform1i(uniformNoLighting, 1);
 			setColor(1.0f * flick, 0.50f * flick, 0.18f * flick);
-			drawMesh(MESH_CILINDRO, glm::scale(body, glm::vec3(LANTERN_BODY_R, LANTERN_BODY_H, LANTERN_BODY_R)));
+			drawMesh(MESH_CILINDRO, glm::scale(body, glm::vec3(bodyR, bodyH, bodyR)));
 			glUniform1i(uniformNoLighting, 0);
+		}
+
+		// Carta de informacion flotante: cartel de frente a la camara sobre el objeto
+		if (infoOpen >= 0 && cardOK[infoOpen]) {
+			const InfoPoint& ip = infoPoints[infoOpen];
+			Texture& ct = cardTex[infoOpen];
+			float aspect = (ct.GetWidth() > 0) ? (float)ct.GetHeight() / ct.GetWidth() : 1.33f;
+			float cw = ip.cardW, ch = cw * aspect;
+			float yaw = atan2f(camPos.x - infoOpenPos.x, camPos.z - infoOpenPos.z);
+			glm::mat4 m = glm::translate(glm::mat4(1.0f), infoOpenPos + glm::vec3(0.0f, ip.cardY + 0.06f * sinf(1.6f * t), 0.0f));
+			m = glm::rotate(m, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+			m = glm::scale(m, glm::vec3(cw, ch, 1.0f));
+			m = glm::translate(m, glm::vec3(-0.5f, -0.5f, 0.0f));
+			glUniform1i(uniformNoLighting, 1);
+			glDisable(GL_CULL_FACE);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+			glUniform1f(uniformAlpha, glm::min(1.0f, infoT / 0.25f));   // aparece con un fundido de 0.25 s
+			ct.UseTexture();
+			setColor(1.0f, 1.0f, 1.0f);
+			drawMesh(MESH_QUAD, m);
+			glUniform1f(uniformAlpha, 1.0f);
+			glDisable(GL_BLEND);
+			glEnable(GL_CULL_FACE);
+			glUniform1i(uniformNoLighting, 0);
+			plainTexture.UseTexture();
 		}
 
 		// Marcadores numerados (display de 7 segmentos, siempre de frente a la camara, sin iluminacion)
@@ -956,10 +2082,84 @@ int main(int argc, char** argv)
 			glUniform1i(uniformNoLighting, 0);
 		}
 
+		// HUD 2D con las imagenes de Textures/UI: aviso E, tiempo, puntos, instrucciones y resultado
+		{
+			bool nearPool = glm::length(glm::vec2(camPos.x - POOL_C.x, camPos.z - POOL_C.z)) < GAME_NEAR_R;
+			bool showE = uiOK && gameState == GS_IDLE && infoOpen < 0 && (nearPool || infoNear >= 0);
+			bool showGame = uiOK && (gameState == GS_PLAY || gameState == GS_RESULT);
+			if (showE || showGame) {
+				float W = mainWindow.getBufferWidth(), H = mainWindow.getBufferHeight();
+				glm::mat4 ortho = glm::ortho(0.0f, W, 0.0f, H, -1.0f, 1.0f);
+				glm::mat4 ident(1.0f);
+				glUniformMatrix4fv(uniformProjection, 1, GL_FALSE, glm::value_ptr(ortho));
+				glUniformMatrix4fv(uniformView, 1, GL_FALSE, glm::value_ptr(ident));
+				glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), 0.0f);
+				glUniform1i(uniformNoLighting, 1);
+				glDisable(GL_DEPTH_TEST);
+				glEnable(GL_BLEND);
+				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+				const float k = 0.78f * H / 720.0f, mg = 20.0f * k;      // escala de la interfaz (se adapta al tamano de la ventana)
+				auto img = [&](Texture& tx, float x, float y, float w, float h, float a) {
+					tx.UseTexture();
+					setColor(1.0f, 1.0f, 1.0f);
+					glUniform1f(uniformAlpha, a);
+					drawMesh(MESH_QUAD, glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(x, y, 0.0f)), glm::vec3(w, h, 1.0f)));
+				};
+				// numero centrado en (cx, cy) con los glifos de hud_digitos.png (h = alto del digito)
+				auto number = [&](int n, float cx, float cy, float h, glm::vec3 tint) {
+					uiDigitos.UseTexture();
+					setColor(tint.r, tint.g, tint.b);
+					glUniform1f(uniformAlpha, 1.0f);
+					char txt[12]; int nd = snprintf(txt, sizeof(txt), "%d", n);
+					float total = 0.0f;
+					for (int i = 0; i < nd; i++) total += h * digitAspect[txt[i] - '0'] * 0.94f;
+					float x = cx - total * 0.5f;
+					for (int i = 0; i < nd; i++) {
+						int d = txt[i] - '0';
+						float w = h * digitAspect[d];
+						drawMesh(MESH_DIG[d], glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(x, cy - h * 0.5f, 0.0f)), glm::vec3(w, h, 1.0f)));
+						x += w * 0.94f;
+					}
+				};
+
+				if (showE) img(uiAviso, (W - 420.0f * k) * 0.5f, mg, 420.0f * k, 140.0f * k, 1.0f);       // abajo al centro
+				if (showGame) {
+					float pw = 360.0f * k, ph = 140.0f * k;
+					img(uiTiempo, mg, H - mg - ph, pw, ph, 1.0f);                                       // arriba a la izquierda
+					img(uiPuntos, W - mg - pw, H - mg - ph, pw, ph, 1.0f);                              // arriba a la derecha
+					int secs = (int)ceilf(gameTimeLeft);
+					glm::vec3 tcol = (gameTimeLeft < 10.0f) ? glm::vec3(1.0f, 0.35f, 0.30f) : glm::vec3(1.0f);   // en rojo los ultimos 10 s
+					// los numeros van en la mitad derecha de cada marco (la izquierda es el icono)
+					number(secs,      mg + 0.75f * pw,            H - mg - 0.5f * ph, ph * (secs >= 100 ? 0.44f : 0.55f), tcol);
+					number(gameScore, W - mg - pw + 0.75f * pw,   H - mg - 0.5f * ph, ph * (gameScore >= 100 ? 0.44f : (gameScore >= 10 ? 0.52f : 0.55f)), glm::vec3(1.0f));
+					if (gameState == GS_PLAY && gameT < 8.0f) {                                         // instrucciones al empezar, con fundido
+						float iw = 800.0f * k * 0.8f, ih = 220.0f * k * 0.8f;
+						img(uiInstr, (W - iw) * 0.5f, H - mg - ih, iw, ih, glm::min(1.0f, (8.0f - gameT) / 1.5f));
+					}
+					if (gameState == GS_RESULT) {                                                       // resultado: centrado y pegado abajo
+						float rk = k * 1.15f, rw = 700.0f * rk, rh = 400.0f * rk;
+						img(uiResult, (W - rw) * 0.5f, 0.0f, rw, rh, 1.0f);
+						number(gameScore, W * 0.5f, rh * 0.40f, rh * (gameScore >= 100 ? 0.26f : 0.32f), glm::vec3(1.0f, 0.82f, 0.30f));
+					}
+				}
+				glUniform1f(uniformAlpha, 1.0f);
+				glDisable(GL_BLEND);
+				glEnable(GL_DEPTH_TEST);
+				glUniform1i(uniformNoLighting, 0);
+			}
+		}
+
 		if (shotsDir) { // modo revision: 1 captura por vista, luego cierra
-			const int N = (int)(sizeof(AUTO_VIEWS) / sizeof(AUTO_VIEWS[0]));
+			const CamPreset* views = beauty ? BEAUTY_VIEWS : AUTO_VIEWS;
+			const int N = beauty ? (int)(sizeof(BEAUTY_VIEWS) / sizeof(BEAUTY_VIEWS[0])) : (int)(sizeof(AUTO_VIEWS) / sizeof(AUTO_VIEWS[0]));
 			int view = shotFrame / 30, phase = shotFrame % 30;
-			if (phase == 0 && view < N) { SetCameraPreset(AUTO_VIEWS[view]); freeCamera = true; }
+			if (phase == 0 && view < N) {
+				SetCameraPreset(views[view]); freeCamera = true;
+				bool aerial = beauty && (view == 8 || view == 9);
+				fogDensityOverride = aerial ? 0.004f : -1.0f;   // aereas: menos niebla
+				moonAmbientOverride = aerial ? 0.60f : -1.0f;   // y mas luz ambiental
+			}
 			if (phase == 20 && view < N) {
 				char path[512];
 				snprintf(path, sizeof(path), "%s/view%d.tga", shotsDir, view);
@@ -969,10 +2169,38 @@ int main(int argc, char** argv)
 			if (view >= N) mainWindow.setShouldClose(true);
 		}
 
+		if (cardShotDir) {
+			if (csFrame == 60) printf("CARTA: infoOpen=%d infoNear=%d infoT=%.2f cardOK=%d pos=(%.1f,%.1f,%.1f)\n", infoOpen, infoNear, infoT, infoOpen >= 0 ? (int)cardOK[infoOpen] : -1, infoOpenPos.x, infoOpenPos.y, infoOpenPos.z);
+			if (csFrame == 20 || csFrame == 60) {
+				char path[512];
+				snprintf(path, sizeof(path), "%s/card%d.tga", cardShotDir, csFrame == 20 ? 0 : 1);
+				SaveScreenshotTGA(path);
+			}
+			if (csFrame > 70) mainWindow.setShouldClose(true);
+		}
+		if (gameShotDir && gameState == GS_RESULT && gameT > 0.8f) {
+			static bool shotResult = false;
+			if (!shotResult) { shotResult = true; char path[512]; snprintf(path, sizeof(path), "%s/gameresult.tga", gameShotDir); SaveScreenshotTGA(path); }
+		}
+		if (gameShotDir) {
+			static const int SHOTS[] = { 20, 110, 190, 260, 330, 400 };
+			for (int i = 0; i < 6; i++)
+				if (gsFrame == SHOTS[i]) {
+					char path[512];
+					snprintf(path, sizeof(path), "%s/game%d.tga", gameShotDir, i);
+					SaveScreenshotTGA(path);
+				}
+			if (gsFrame > 430) {
+				printf("FPS promedio de la prueba: %.1f\n", 390.0f / ((float)glfwGetTime() - gsT0));
+				mainWindow.setShouldClose(true);
+			}
+		}
+
 		glFlush();
 		mainWindow.swapBuffers();
 	}
 
+	if (taikoHitLoaded) ma_sound_uninit(&taikoHit);
 	if (bgmLoaded) ma_sound_uninit(&bgm);
 	if (audioReady) ma_engine_uninit(&audioEngine);
 

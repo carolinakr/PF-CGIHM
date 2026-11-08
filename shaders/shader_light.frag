@@ -150,6 +150,8 @@ void main()
 		color = texColor * vColor * finalcolor;
 	}
 
+	color.a = texColor.a * vColor.a;   // la transparencia (agua) no debe inflarse con la suma de luces
+
 	// niebla exponencial (fogDensity = 0 la desactiva)
 	float fogFactor = exp(-fogDensity * length(eyePosition - FragPos));
 	color.rgb = mix(fogColor, color.rgb, clamp(fogFactor, 0.0, 1.0));

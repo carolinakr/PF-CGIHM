@@ -50,6 +50,7 @@ int Window::Initialise()
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
+	glfwWindowHint(GLFW_SAMPLES, 4); // antialiasing 4x (MSAA)
 	//CREAR VENTANA
 	mainWindow = glfwCreateWindow(width, height, "Gion Matsuri - Noches de Yoiyama", NULL, NULL);
 
@@ -80,6 +81,7 @@ int Window::Initialise()
 		return 1;
 	}
 
+	glEnable(GL_MULTISAMPLE);
 	glEnable(GL_DEPTH_TEST); //HABILITAR BUFFER DE PROFUNDIDAD
 							 // Asignar valores de la ventana y coordenadas
 							 
@@ -119,7 +121,7 @@ void Window::ManejaTeclado(GLFWwindow* window, int key, int code, int action, in
 {
 	Window* theWindow = static_cast<Window*>(glfwGetWindowUserPointer(window));
 
-	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && theWindow->escapeCloses)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
