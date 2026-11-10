@@ -25,6 +25,7 @@ Controles:
 #include <map>
 #include <functional>
 #include <algorithm>
+#include <filesystem>
 
 #include "miniaudio.h"
 
@@ -113,6 +114,23 @@ bool KeyPressedOnce(int key)
 	bool pressed = keys[key] && !prev[key];
 	prev[key] = keys[key];
 	return pressed;
+}
+
+// Frustum de la camara: seis planos sacados de proyeccion * vista. Un objeto (esfera) fuera de la vista no se dibuja.
+struct Frustum { glm::vec4 pl[6]; };
+Frustum MakeFrustum(const glm::mat4& vp)
+{
+	Frustum f;
+	glm::vec4 r0(vp[0][0], vp[1][0], vp[2][0], vp[3][0]), r1(vp[0][1], vp[1][1], vp[2][1], vp[3][1]);
+	glm::vec4 r2(vp[0][2], vp[1][2], vp[2][2], vp[3][2]), r3(vp[0][3], vp[1][3], vp[2][3], vp[3][3]);
+	f.pl[0] = r3 + r0; f.pl[1] = r3 - r0; f.pl[2] = r3 + r1; f.pl[3] = r3 - r1; f.pl[4] = r3 + r2; f.pl[5] = r3 - r2;
+	for (auto& q : f.pl) q /= glm::length(glm::vec3(q));
+	return f;
+}
+bool Visible(const Frustum& f, const glm::vec3& c, float r)
+{
+	for (const auto& q : f.pl) if (q.x * c.x + q.y * c.y + q.z * c.z + q.w < -r) return false;
+	return true;
 }
 
 // Promedio de normales para sombreado suave (Phong).
@@ -659,6 +677,7 @@ struct Prop {
 	glm::mat4 matrix = glm::mat4(1.0f);
 	glm::vec3 pos = glm::vec3(0.0f);
 	float topY = 0.0f;
+	glm::vec3 cullC = glm::vec3(0.0f); float cullR = 1e9f;   // esfera para descartar lo que no se ve
 };
 
 // ESCENA: calle de Yoiyama armada con los modelos disponibles. Orden: entrada (+Z) -> fondo (-Z).
@@ -737,6 +756,48 @@ const glm::vec3 MARKER_COLORS[10] = {
 };
 const glm::vec3& MarkerColor(int id) { return MARKER_COLORS[(id - 1) % 10]; }
 
+// Vegetacion: arces y sakuras en dos hileras irregulares detras de los edificios y alrededor del templo, mas arbustos en el
+// borde de la entrada y a los lados del templo. Rompe el horizonte plano. Posiciones pseudoaleatorias fijas (semilla 11).
+const char* M_MAPLE  = "Models/maple_tree.glb";
+const char* M_SAKURA = "Models/sakura_tree_01_-_low_poly_model.glb";
+const char* M_BUSH   = "Models/stylized_bush.glb";
+void AddScenery()
+{
+	std::mt19937 rng(11);
+	auto U = [&](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); };
+	auto tree = [&](float x, float z, float hMin, float hMax) {
+		bool sakura = U(0.0f, 1.0f) < 0.3f;
+		props.push_back({ sakura ? 17 : 16, sakura ? M_SAKURA : M_MAPLE, 0, z, U(hMin, hMax), U(0.0f, 360.0f), x });
+	};
+	auto bush = [&](float x, float z, float h) { props.push_back({ 18, M_BUSH, 0, z, h, U(0.0f, 360.0f), x }); };
+	// hileras a los lados (a partir de los edificios) a lo largo de toda la calle
+	for (int side = -1; side <= 1; side += 2) {
+		for (float z = 34.0f; z > -52.0f; z -= 5.5f) {
+			tree(side * U(19.5f, 24.0f), z + U(-1.5f, 1.5f), 10.0f, 14.0f);            // hilera cercana
+			if (U(0.0f, 1.0f) < 0.8f) tree(side * U(28.0f, 38.0f), z + U(-2.5f, 2.5f), 12.0f, 17.0f);   // hilera lejana
+			if (U(0.0f, 1.0f) < 0.6f) bush(side * U(17.5f, 21.0f), z + U(-2.0f, 2.0f), U(1.0f, 1.8f));
+		}
+	}
+	// detras del templo (enmarcan su silueta)
+	for (float x = -34.0f; x <= 34.0f; x += 6.0f)
+		tree(x + U(-1.5f, 1.5f), U(-62.0f, -51.0f), 11.0f, 16.0f);
+	for (float x = -28.0f; x <= 28.0f; x += 8.0f)
+		tree(x + U(-2.0f, 2.0f), U(-76.0f, -66.0f), 14.0f, 19.0f);
+	// detras de la entrada (si alguien mira hacia atras)
+	for (float x = -30.0f; x <= 30.0f; x += 7.0f)
+		if (fabsf(x) > 6.0f) tree(x + U(-2.0f, 2.0f), U(38.0f, 48.0f), 10.0f, 14.0f);
+	// arbustos: flancos del templo y de la entrada
+	for (int side = -1; side <= 1; side += 2) {
+		bush(side * 11.5f, -36.0f, 1.4f); bush(side * 13.5f, -38.5f, 1.8f); bush(side * 16.0f, -41.0f, 2.0f);
+		bush(side * 7.4f, 29.5f, 1.1f);   bush(side * 7.6f, 32.0f, 1.4f);
+		// plaza del templo y torii: en hileras bajas a los lados de la escalinata y de la calle
+		for (float z = -28.0f; z > -39.5f; z -= 1.9f) bush(side * U(7.0f, 7.8f), z + U(-0.4f, 0.4f), U(1.0f, 1.6f));
+		bush(side * 5.2f, -33.2f, 1.2f); bush(side * 6.0f, -36.5f, 1.5f); bush(side * 4.6f, -38.4f, 1.3f); bush(side * 9.0f, -39.0f, 1.7f);
+		for (float z = 27.0f; z > 12.0f; z -= 2.6f) bush(side * U(7.2f, 7.8f), z + U(-0.5f, 0.5f), U(0.9f, 1.4f));   // borde de la calle de entrada
+	}
+	for (Prop& pr : props) if (pr.id >= 16) pr.cutBelowY = -1e30f;
+}
+
 void LoadProps()
 {
 	printf("\n=== MODELOS (numero de color sobre cada uno; tecla M = mostrar/ocultar) ===\n");
@@ -747,6 +808,7 @@ void LoadProps()
 		if (it == cache.end()) {
 			Model* mdl = new Model();
 			mdl->LoadModel(pr.file, pr.cutBelowY);
+			if (mdl->IsLoaded()) printf("  [malla] %s: %u mallas\n", pr.file, mdl->GetMeshCount());
 			it = cache.emplace(key, mdl).first;
 		}
 		pr.model = it->second;
@@ -769,6 +831,8 @@ void LoadProps()
 		pr.matrix = m;
 		pr.pos = glm::vec3(x, 0.0f, pr.z);
 		pr.topY = pr.targetH;
+		pr.cullC = glm::vec3(m * glm::vec4(cx, mn.y + 0.5f * size.y, cz, 1.0f));
+		pr.cullR = 0.5f * glm::length(size) * scale * 1.05f + 0.5f;
 		printf("  #%-2d  alto %.2f m  yaw %+4.0f  x %+5.1f  z %+5.1f   %s\n", pr.id, pr.targetH, pr.yaw, x, pr.z, pr.file);
 	}
 }
@@ -1001,6 +1065,39 @@ std::vector<Owner> owners = {
 	{ "Models/toda_yuki_kimono.glb", 1.50f, STREET_HALF_W - 0.95f, 3.9f, -90.0f, 2.1f },
 };
 
+// Los dos duenos de la pileta estan separados en piezas articuladas (Models/Animaciones/Vendedores/, hechas con una herramienta
+// propia que corta la malla escaneada por zonas): base (piernas y kimono) -> torso con brazos (se corta en el obi) -> cabeza (se corta
+// en el cuello); el de rojo trae ademas el abanico con sus manos, hijo del torso. Cada pieza trae su origen en la articulacion.
+// Pivotes en unidades del modelo respecto a su raiz (centro X/Z, base en Y); el escalado es el mismo del Owner.
+struct NpcRig {
+	Model *base = nullptr, *torso = nullptr, *head = nullptr, *fan = nullptr;
+	glm::vec3 pTorso, pHead, pFan;
+	float bowDeg, headYawDeg, fanDeg;    // amplitudes de la animacion de cada personaje
+};
+NpcRig npcRigs[2];     // 0: kimono gris (Nagase), 1: kimono rojo (Toda) -> mismo orden que los dos primeros de `owners`
+
+void LoadNpcRigs()
+{
+	auto ld = [&](const char* f) { Model* m = new Model(); m->LoadModel(f); if (!m->IsLoaded()) { printf("NO CARGO pieza: %s\n", f); delete m; return (Model*)nullptr; } return m; };
+	NpcRig& a = npcRigs[0];
+	a.base = ld("Models/Animaciones/Vendedores/nagase_base.glb");
+	a.torso = ld("Models/Animaciones/Vendedores/nagase_torso.glb");
+	a.head = ld("Models/Animaciones/Vendedores/nagase_cabeza.glb");
+	a.pTorso = glm::vec3(0.6718f, 14.4475f, -0.4475f);
+	a.pHead = glm::vec3(0.6218f, 21.5475f, -0.3975f);
+	a.bowDeg = 9.0f; a.headYawDeg = 28.0f; a.fanDeg = 0.0f;
+	NpcRig& b = npcRigs[1];
+	b.base = ld("Models/Animaciones/Vendedores/toda_base.glb");
+	b.torso = ld("Models/Animaciones/Vendedores/toda_torso.glb");
+	b.head = ld("Models/Animaciones/Vendedores/toda_cabeza.glb");
+	b.fan = ld("Models/Animaciones/Vendedores/toda_abanico.glb");
+	b.pTorso = glm::vec3(0.0050f, 8.7515f, 0.0471f);
+	b.pHead = glm::vec3(-0.0450f, 14.9515f, -0.1529f);
+	b.pFan = glm::vec3(-0.5450f, 11.7515f, 1.1471f);
+	b.bowDeg = 16.0f; b.headYawDeg = 20.0f; b.fanDeg = 1.0f;
+	for (NpcRig& r : npcRigs) if (!r.base || !r.torso || !r.head) { r.base = nullptr; }   // sin piezas completas: se usa el modelo entero
+}
+
 void LoadPool()
 {
 	fishModel = new Model();
@@ -1046,6 +1143,7 @@ void LoadPool()
 		vi++;
 	}
 
+	LoadNpcRigs();
 	std::map<std::string, Model*> npcCache;   // cada .glb se carga una sola vez
 	for (Owner& o : owners) {
 		auto it = npcCache.find(o.file);
@@ -1303,7 +1401,7 @@ void AddTempleLanterns()
 	size_t before = lanterns.size();
 	auto add = [&](float x, float y, float z) {
 		Lantern l = { glm::vec3(tp->matrix * glm::vec4(x, y, z, 1.0f)), rnd(rng), rnd(rng) };
-		l.scale = 2.0f;
+		l.scale = 1.2f;
 		lanterns.push_back(l);
 	};
 	for (int k = 0; k < 7; k++) add(-800.0f + k * 266.7f, 620.0f, 775.0f);                 // alero 1: frente
@@ -1321,27 +1419,29 @@ void AddTempleLanterns()
 //  - Cartas: Textures/Cards/card_<id>.png (hoy son provisionales: basta reemplazar el archivo, mismo nombre).
 //    La carta es un cartel que flota sobre el objeto, siempre de frente a la camara; se cierra con E o al alejarte.
 // ============================================================
-struct InfoPoint { const char* id; glm::vec3 pos; float radius, cardY, cardW; };
+struct InfoPoint {
+	const char* id; glm::vec3 pos; float radius, cardY, cardW, cardFwd;   // cardFwd: cuanto se adelanta la carta hacia la camara
+	const char* folder; int first, count;                                  // carpeta de Textures/UI y numeracion de sus paginas (N.png)
+};
 InfoPoint infoPoints[] = {
-	{ "torii",    glm::vec3(0.0f, 0.0f, 27.0f),                         6.0f, 5.0f, 2.2f },   // entrada
-	{ "yamahoko", glm::vec3(0.0f),                                      5.0f, 6.8f, 2.4f },   // sigue al carro mas cercano
-	{ "taiko",    glm::vec3(0.0f),                                      3.8f, 2.8f, 1.8f },   // (se rellena con TAIKO_POS[1])
-	{ "faroles",  glm::vec3(STREET_HALF_W - 2.8f, 0.0f, 24.5f),         3.5f, 2.8f, 1.8f },   // farol de piedra de la entrada
-	{ "templo",   glm::vec3(0.0f, 0.0f, -33.5f),                        7.0f, 7.5f, 3.2f },
-	{ "yatai",    glm::vec3(STREET_HALF_W - 1.0f, 0.0f, 14.5f),         3.5f, 3.6f, 1.8f },   // puesto de fideos
-	{ "machiya",  glm::vec3(-(STREET_HALF_W + 3.4f), 0.0f, 2.5f),       5.5f, 4.5f, 2.2f },   // casa de dos pisos
+	{ "historia",   glm::vec3(0.0f, 0.0f, 23.5f),   6.5f, 3.4f, 3.8f, 1.2f, "Gion Matsuri-historia",   1,  5 },   // entrada (torii)
+	{ "fechas",     glm::vec3(0.0f, 0.0f, -25.0f),  10.0f, 3.1f, 4.2f, 2.4f, "Gion Matsuri-fechas",     6, 13 },   // templo
+	{ "elementos",  glm::vec3(0.0f),                5.5f, 4.8f, 4.2f, 2.2f, "Gion Matsuri-elementos", 19,  8 },   // sigue al carro mas cercano
 };
 const int INFO_COUNT = (int)(sizeof(infoPoints) / sizeof(infoPoints[0]));
-const int INFO_CART = 1;
-Texture cardTex[INFO_COUNT];
-bool cardOK[INFO_COUNT];
-std::string cardPath[INFO_COUNT];
-int infoNear = -1, infoOpen = -1;
+const int INFO_CART = 2;
+// Paginas de todas las series, en orden; infoPoints[i] usa [first_idx, first_idx + count)
+std::vector<std::string> cardPaths;     // (con reserve: Texture guarda el puntero al texto)
+std::vector<Texture> cardPages;
+std::vector<char> cardPageOK;
+int infoPageBase[INFO_COUNT];
+int infoNear = -1, infoOpen = -1, infoPage = 0;
 float infoT = 0.0f;
 glm::vec3 infoNearPos(0.0f), infoOpenPos(0.0f);
 
-Texture uiTiempo, uiPuntos, uiAviso, uiInstr, uiResult, uiDigitos;
-bool uiOK = false;
+Texture uiTiempo, uiPuntos, uiAviso, uiInstr, uiResult, uiDigitos, uiNav, uiCtrl;
+bool uiCtrlOK = false, controlsOn = true, msaaOn = true, qualityDirty = true;
+bool uiOK = false, uiNavOK = false;
 
 void LoadUI()
 {
@@ -1353,16 +1453,21 @@ void LoadUI()
 	uiDigitos = Texture("Textures/UI/hud_digitos.png");       bool f = uiDigitos.LoadTextureA();
 	uiOK = a && b && c && d && e && f;
 	if (!uiOK) printf("Faltan imagenes de Textures/UI: el menu no se mostrara\n");
-	infoPoints[2].pos = TAIKO_POS[1];
+	uiCtrl = Texture("Textures/UI/hud_controles.png");       uiCtrlOK = uiCtrl.LoadTextureA();
+	uiNav = Texture("Textures/UI/hud_cartas_nav.png");        uiNavOK = uiNav.LoadTextureA();
+	cardPaths.reserve(64); cardPages.reserve(64); cardPageOK.reserve(64);
 	for (int i = 0; i < INFO_COUNT; i++) {
-		cardPath[i] = std::string("Textures/Cards/card_") + infoPoints[i].id + ".png";
-		cardTex[i] = Texture(cardPath[i].c_str());
-		cardOK[i] = cardTex[i].LoadTextureA();
+		infoPageBase[i] = (int)cardPages.size();
+		for (int k = 0; k < infoPoints[i].count; k++) {
+			cardPaths.push_back(std::string("Textures/UI/") + infoPoints[i].folder + "/" + std::to_string(infoPoints[i].first + k) + ".png");
+			cardPages.push_back(Texture(cardPaths.back().c_str()));
+			cardPageOK.push_back(cardPages.back().LoadTextureA() ? 1 : 0);
+		}
 	}
 }
 
 // Punto de informacion mas cercano dentro de su radio; abre/cierra la carta con E (la pileta tiene prioridad: ahi E es el juego)
-void UpdateInfo(float dt, bool ePressed)
+void UpdateInfo(float dt, bool ePressed, int navDir)
 {
 	glm::vec3 cp = camera.getCameraPosition();
 	if (gameState != GS_IDLE) { infoNear = -1; infoOpen = -1; return; }
@@ -1391,10 +1496,113 @@ void UpdateInfo(float dt, bool ePressed)
 		infoT += dt;
 		if (glm::length(glm::vec2(cp.x - infoOpenPos.x, cp.z - infoOpenPos.z)) > infoPoints[infoOpen].radius * 1.5f) infoOpen = -1;
 	}
+	if (infoOpen >= 0 && navDir != 0) {       // flechas: pagina siguiente / anterior de la misma serie (da la vuelta)
+		int n = infoPoints[infoOpen].count;
+		infoPage = ((infoPage + navDir) % n + n) % n;
+		infoT = 0.0f;
+	}
 	if (ePressed && !nearPool) {
 		if (infoOpen >= 0) infoOpen = -1;
-		else if (infoNear >= 0) { infoOpen = infoNear; infoOpenPos = infoNearPos; infoT = 0.0f; }
+		else if (infoNear >= 0) { infoOpen = infoNear; infoOpenPos = infoNearPos; infoT = 0.0f; infoPage = 0; }
 	}
+}
+
+// ============================================================
+//  FUEGOS ARTIFICIALES (hanabi)
+//  En Gion se cierra la noche con hanabi: aqui suben cohetes detras del templo y estallan sobre el.
+//  Sistema de particulas: cada cohete (Shell) sube con gravedad real y estalla en el apice; cada chispa (Spark) sale con
+//  una velocidad inicial, pierde rapidez por friccion con el aire, cae y se apaga. Se dibujan como sprites con mezcla aditiva
+//  (la luz suma, no tapa) y, mientras dura el destello, el estallido ilumina la calle como una luz puntual.
+// ============================================================
+struct Spark { glm::vec3 p, v, col; float age, life, size; };
+struct Shell { glm::vec3 p, v, col; int type; float fuse, age; };
+std::vector<Spark> sparks;
+std::vector<Shell> shells;
+float fwTimer = 0.4f;
+std::mt19937 fwRng(2026);
+glm::vec3 fwFlashPos(0.0f), fwFlashCol(1.0f);
+float fwFlashAge = 99.0f;
+Texture fwSprite;
+bool fwSpriteOK = false;
+bool fireworksOn = false;
+int dbgSkipId = -1; int dbgLights = 5; bool dbgNoMsaa = false;
+int quality = 1;   // 0 alta, 1 media (inicio), 2 baja: se cambia con F2
+int dbgSkip = 0;   // --skip N: pruebas de rendimiento (1 props, 2 duenos, 4 caminantes, 8 taiko, 16 carros, 32 faroles, 64 arboles)     // se encienden con H
+const glm::vec3 FW_COLORS[] = {
+	{ 1.00f, 0.25f, 0.20f }, { 1.00f, 0.75f, 0.25f }, { 1.00f, 0.40f, 0.70f },
+	{ 0.35f, 0.75f, 1.00f }, { 0.45f, 1.00f, 0.45f }, { 1.00f, 1.00f, 0.90f }, { 0.75f, 0.45f, 1.00f },
+};
+
+void UpdateFireworks(float dt)
+{
+	if (!fireworksOn) { shells.clear(); sparks.clear(); fwFlashAge = 99.0f; return; }
+	dt = glm::min(dt, 0.1f);
+	auto U = [&](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(fwRng); };
+	const float G = 9.8f;
+
+	fwTimer -= dt;
+	if (fwTimer <= 0.0f) {                      // nuevo cohete cada 1.5 a 3.5 s (a veces dos juntos)
+		fwTimer = U(1.5f, 3.5f);
+		int n = (U(0.0f, 1.0f) < 0.3f) ? 2 : 1;
+		for (int i = 0; i < n; i++) {
+			Shell sh;
+			sh.p = glm::vec3(U(-15.0f, 15.0f), 0.0f, U(-38.0f, -33.0f));
+			float apex = U(26.0f, 34.0f);
+			float v0 = sqrtf(2.0f * G * apex);
+			sh.v = glm::vec3(U(-1.5f, 1.5f), v0, U(-0.5f, 1.5f));
+			sh.fuse = v0 / G * 0.97f;
+			sh.age = 0.0f;
+			sh.type = (int)U(0.0f, 2.999f);
+			sh.col = FW_COLORS[(int)U(0.0f, 6.999f)];
+			shells.push_back(sh);
+		}
+	}
+
+	for (size_t i = 0; i < shells.size();) {
+		Shell& sh = shells[i];
+		sh.age += dt;
+		sh.v.y -= G * dt;
+		sh.p += sh.v * dt;
+		for (int k = 0; k < 2; k++)             // estela dorada
+			sparks.push_back({ sh.p, glm::vec3(U(-0.6f, 0.6f), U(-1.5f, -0.3f), U(-0.6f, 0.6f)), glm::vec3(1.0f, 0.75f, 0.35f), 0.0f, U(0.35f, 0.7f), 0.55f });
+		if (sh.age >= sh.fuse) {                // estallido
+			const int N = (sh.type == 2) ? 90 : (sh.type == 1 ? 64 : 110);
+			glm::vec3 c2 = FW_COLORS[(int)U(0.0f, 6.999f)];
+			glm::vec3 axis = glm::normalize(glm::vec3(U(-0.4f, 0.4f), U(-0.3f, 0.3f), 1.0f));   // normal del anillo
+			glm::vec3 ax1 = glm::normalize(glm::cross(axis, glm::vec3(0.0f, 1.0f, 0.0f)));
+			glm::vec3 ax2 = glm::cross(axis, ax1);
+			for (int k = 0; k < N; k++) {
+				glm::vec3 d; float speed, life, size = 1.1f;
+				glm::vec3 col = (k % 3 == 0) ? c2 : sh.col;
+				if (sh.type == 1) {             // anillo
+					float a = 2.0f * PI_F * k / N;
+					d = ax1 * cosf(a) + ax2 * sinf(a);
+					speed = 20.0f; life = U(1.8f, 2.2f);
+				} else {                        // esfera (uniforme)
+					float z = U(-1.0f, 1.0f), a = U(0.0f, 2.0f * PI_F), r = sqrtf(1.0f - z * z);
+					d = glm::vec3(r * cosf(a), z, r * sinf(a));
+					if (sh.type == 2) { speed = U(10.0f, 17.0f); life = U(2.8f, 3.6f); col = glm::vec3(1.0f, 0.72f, 0.28f); size = 0.9f; }   // "sauce" dorado: cae lento
+					else { speed = U(17.0f, 23.0f); life = U(1.8f, 2.4f); }
+				}
+				sparks.push_back({ sh.p, d * speed, col, 0.0f, life, size });
+			}
+			fwFlashPos = sh.p; fwFlashCol = sh.col; fwFlashAge = 0.0f;
+			shells.erase(shells.begin() + i);
+			continue;
+		}
+		i++;
+	}
+
+	for (size_t i = 0; i < sparks.size();) {
+		Spark& sp = sparks[i];
+		sp.age += dt;
+		if (sp.age >= sp.life) { sparks[i] = sparks.back(); sparks.pop_back(); continue; }
+		sp.v.y -= 5.0f * dt;                    // gravedad aparente (las chispas son ligeras)
+		sp.v *= expf(-1.5f * dt);               // friccion con el aire
+		sp.p += sp.v * dt;
+		i++;
+	}
+	fwFlashAge += dt;
 }
 
 // ============================================================
@@ -1478,7 +1686,8 @@ int main(int argc, char** argv)
 	const char* gameShotDir = nullptr;   // --gameshot <carpeta>: prueba automatica del minijuego
 	int gsFrame = 0;
 	const char* cardShotDir = nullptr;   // --cardshot <carpeta>: prueba automatica de las cartas flotantes
-	int csFrame = 0;
+	int csFrame = 0, fsFrame = 0;
+	const char* fireShotDir = nullptr;   // --fireshot <carpeta>: prueba automatica de los fuegos artificiales
 	float gsT0 = 0.0f;
 	bool beauty = false;
 	int winW = 1366, winH = 768;
@@ -1486,6 +1695,12 @@ int main(int argc, char** argv)
 		if (strcmp(argv[i], "--shots") == 0 && i + 1 < argc) shotsDir = argv[i + 1];
 		if (strcmp(argv[i], "--gameshot") == 0 && i + 1 < argc) gameShotDir = argv[i + 1];
 		if (strcmp(argv[i], "--cardshot") == 0 && i + 1 < argc) cardShotDir = argv[i + 1];
+		if (strcmp(argv[i], "--skip") == 0 && i + 1 < argc) dbgSkip = atoi(argv[i + 1]);
+		if (strcmp(argv[i], "--lights") == 0 && i + 1 < argc) dbgLights = atoi(argv[i + 1]);
+		if (strcmp(argv[i], "--nomsaa") == 0) dbgNoMsaa = true;
+		if (strcmp(argv[i], "--skipid") == 0 && i + 1 < argc) dbgSkipId = atoi(argv[i + 1]);
+		if (strcmp(argv[i], "--hq") == 0) gUseOptimizedModels = false;   // modelos originales (sin Models/Opt)
+		if (strcmp(argv[i], "--fireshot") == 0 && i + 1 < argc) fireShotDir = argv[i + 1];
 		if (strcmp(argv[i], "--views") == 0 && i + 1 < argc && strcmp(argv[i + 1], "beauty") == 0) beauty = true;
 		if (strcmp(argv[i], "--size") == 0 && i + 2 < argc) { winW = atoi(argv[i + 1]); winH = atoi(argv[i + 2]); }
 	}
@@ -1495,12 +1710,43 @@ int main(int argc, char** argv)
 		return 1;
 
 	// ─── Audio (opcional): si no existe el archivo, simplemente no suena ───
-	ma_sound bgm;
-	bool bgmLoaded = false;
+	ma_sound bgm, taikoTrack;
+	bool bgmLoaded = false, taikoTrackLoaded = false;
 	bool audioReady = (ma_engine_init(NULL, &audioEngine) == MA_SUCCESS);
 	if (audioReady)
 	{
-		if (ma_sound_init_from_file(&audioEngine, "Audio/ohayashi_loop.mp3",
+		// Pistas de Audio/: la de "ohayashi" es la musica de fondo; la de taiko/koto ("kaazoom", "taiko", "koto") suena en 3D
+		// desde los tambores (se oye mas fuerte al acercarse). Si solo hay una pista, es la de fondo.
+		std::string bgmFile, taikoFile;
+		try {
+			for (const auto& en : std::filesystem::directory_iterator("Audio")) {
+				std::string ext = en.path().extension().string(), nm = en.path().stem().string();
+				for (char& ch : ext) ch = (char)tolower((unsigned char)ch);
+				for (char& ch : nm) ch = (char)tolower((unsigned char)ch);
+				if (nm == "taiko_hit" || nm == "pez_salto" || nm == "red_agua") continue;
+				if (ext != ".mp3" && ext != ".ogg" && ext != ".wav" && ext != ".flac") continue;
+				std::string f = en.path().generic_string();
+				bool isTaiko = nm.find("kaazoom") != std::string::npos || nm.find("taiko") != std::string::npos || nm.find("koto") != std::string::npos;
+				if (isTaiko && nm.find("ohayashi") == std::string::npos) { if (taikoFile.empty()) taikoFile = f; }
+				else if (bgmFile.empty()) bgmFile = f;
+			}
+		} catch (...) {}
+		if (bgmFile.empty() && !taikoFile.empty()) { bgmFile = taikoFile; taikoFile.clear(); }
+		if (bgmFile.empty()) printf("No hay musica en Audio/ (pon un .mp3 o .ogg ahi)\n");
+		else printf("Musica de fondo: %s\n", bgmFile.c_str());
+		if (!taikoFile.empty() && ma_sound_init_from_file(&audioEngine, taikoFile.c_str(), MA_SOUND_FLAG_STREAM, NULL, NULL, &taikoTrack) == MA_SUCCESS) {
+			ma_sound_set_position(&taikoTrack, TAIKO_POS[1].x, 1.2f, TAIKO_POS[1].z);
+			ma_sound_set_attenuation_model(&taikoTrack, ma_attenuation_model_inverse);
+			ma_sound_set_min_distance(&taikoTrack, 2.5f);
+			ma_sound_set_max_distance(&taikoTrack, 45.0f);
+			ma_sound_set_rolloff(&taikoTrack, 1.4f);
+			ma_sound_set_looping(&taikoTrack, MA_TRUE);
+			ma_sound_set_volume(&taikoTrack, 1.0f);
+			ma_sound_start(&taikoTrack);
+			taikoTrackLoaded = true;
+			printf("Musica de taiko (3D): %s\n", taikoFile.c_str());
+		}
+		if (!bgmFile.empty() && ma_sound_init_from_file(&audioEngine, bgmFile.c_str(),
 			MA_SOUND_FLAG_STREAM, NULL, NULL, &bgm) == MA_SUCCESS)
 		{
 			ma_sound_set_looping(&bgm, MA_TRUE);
@@ -1525,11 +1771,13 @@ int main(int argc, char** argv)
 	CreateObjects();
 	CreateShaders();
 	InitLanterns();
+	AddScenery();
 	LoadProps();
 	AddTempleLanterns();
 	LoadCart();
 	LoadTaiko();
 	LoadPool();
+	fwSprite = Texture("Textures/Efectos/chispa.png"); fwSpriteOK = fwSprite.LoadTextureA();
 	LoadWalkers();
 	LoadUI();
 
@@ -1605,12 +1853,20 @@ int main(int argc, char** argv)
 		}
 		if (cardShotDir) {                    // prueba automatica de las cartas: acercarse al taiko y pulsar E
 			csFrame++;
-			if (csFrame == 2) camera = Camera(glm::vec3(-3.3f, EYE_HEIGHT, -3.2f), glm::vec3(0.0f, 1.0f, 0.0f), -138.5f, 4.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
-			if (csFrame == 40) camera = Camera(glm::vec3(-3.3f, EYE_HEIGHT, -3.2f), glm::vec3(0.0f, 1.0f, 0.0f), 70.7f, 55.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+			if (csFrame == 2) camera = Camera(glm::vec3(0.0f, EYE_HEIGHT, -17.0f), glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, 8.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+		}
+		if (fireShotDir) {
+			fsFrame++;
+			if (fsFrame == 2) camera = Camera(glm::vec3(5.0f, EYE_HEIGHT, -5.5f), glm::vec3(0.0f, 1.0f, 0.0f), -22.0f, -3.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
+			if (fsFrame == 100) camera = Camera(glm::vec3(-3.9f, EYE_HEIGHT, -3.2f), glm::vec3(0.0f, 1.0f, 0.0f), -160.0f, -8.0f, CAM_MOVE_SPEED, CAM_TURN_SPEED);
 		}
 		bool ePressed = KeyPressedOnce(GLFW_KEY_E) || (cardShotDir && csFrame == 22);
 		UpdateGame(deltaTime, projection, ePressed);
-		UpdateInfo(deltaTime, ePressed);
+		int navDir = 0;
+		if (KeyPressedOnce(GLFW_KEY_RIGHT)) navDir++;
+		if (KeyPressedOnce(GLFW_KEY_LEFT)) navDir--;
+		if (cardShotDir && csFrame == 40) navDir = 1;
+		UpdateInfo(deltaTime, ePressed, navDir);
 		if (gameState == GS_IDLE) {
 			camera.keyControl(mainWindow.getsKeys(), deltaTime);
 			camera.mouseControl(mainWindow.getXChange(), mainWindow.getYChange());
@@ -1619,6 +1875,17 @@ int main(int argc, char** argv)
 		else { mainWindow.getXChange(); mainWindow.getYChange(); }   // durante el juego la camara es fija y el mouse mueve la red
 
 		UpdateCarts(deltaTime);
+		if (KeyPressedOnce(GLFW_KEY_H)) fireworksOn = !fireworksOn;
+		if (KeyPressedOnce(GLFW_KEY_G)) { quality = (quality + 1) % 3; qualityDirty = true; }
+		if (qualityDirty) {
+			qualityDirty = false;
+			dbgLights = (quality == 0) ? 8 : (quality == 1 ? 5 : 3);
+			msaaOn = (quality == 0);
+			if (msaaOn) glEnable(GL_MULTISAMPLE); else glDisable(GL_MULTISAMPLE);
+			printf("Calidad grafica: %s (luces %d, antialiasing %s)\n", quality == 0 ? "alta" : (quality == 1 ? "media" : "baja"), dbgLights, msaaOn ? "si" : "no");
+		}
+		if (KeyPressedOnce(GLFW_KEY_F1)) controlsOn = !controlsOn;
+		UpdateFireworks(deltaTime);
 		UpdateTaiko(deltaTime);
 
 		if (audioReady) {   // el oyente sigue a la camara: el volumen y el paneo cambian con la posicion
@@ -1636,7 +1903,7 @@ int main(int argc, char** argv)
 		std::vector<int> order(lanterns.size());
 		for (size_t i = 0; i < order.size(); i++) order[i] = (int)i;
 		auto dist2 = [&](int i) { glm::vec3 d = lanterns[i].anchor - camPos; return glm::dot(d, d); };
-		unsigned int pointLightCount = (unsigned int)std::min((size_t)MAX_POINT_LIGHTS, order.size());
+		unsigned int pointLightCount = (unsigned int)std::min((size_t)std::min(MAX_POINT_LIGHTS, dbgLights), order.size());
 		std::partial_sort(order.begin(), order.begin() + pointLightCount, order.end(),
 			[&](int a, int b) { return dist2(a) < dist2(b); });
 		for (unsigned int i = 0; i < pointLightCount; i++) {
@@ -1647,6 +1914,11 @@ int main(int argc, char** argv)
 			pointLights[i] = PointLight(LANTERN_COLOR.r, LANTERN_COLOR.g, LANTERN_COLOR.b,
 				0.02f, I, p.x, p.y, p.z, 1.0f, 0.22f, 0.08f);
 		}
+
+		// El destello de un estallido ilumina la calle (usa la ultima de las 8 luces puntuales)
+		if (fwFlashAge < 1.3f && pointLightCount > 0)
+			pointLights[pointLightCount - 1] = PointLight(fwFlashCol.r, fwFlashCol.g, fwFlashCol.b, 0.0f, 1.8f * expf(-fwFlashAge * 2.4f),
+				fwFlashPos.x, fwFlashPos.y, fwFlashPos.z, 1.0f, 0.0f, 0.0009f);
 
 		// --- Limpiar + skybox ---
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1674,6 +1946,7 @@ int main(int argc, char** argv)
 		glUniform3f(shaderList[0].GetUniformLocation("fogColor"), FOG_COLOR.r, FOG_COLOR.g, FOG_COLOR.b);
 		glUniformMatrix4fv(uniformProjection, 1, GL_FALSE, glm::value_ptr(projection));
 		glUniformMatrix4fv(uniformView, 1, GL_FALSE, glm::value_ptr(camera.calculateViewMatrix()));
+		const Frustum frustum = MakeFrustum(projection * camera.calculateViewMatrix());
 		glUniform3f(uniformEyePosition, camPos.x, camPos.y, camPos.z);
 
 		glm::vec3 flashPos = camPos; flashPos.y -= 0.3f;
@@ -1725,6 +1998,9 @@ int main(int argc, char** argv)
 		glDisable(GL_CULL_FACE);
 		for (const Prop& pr : props) {
 			if (!pr.model || !pr.model->IsLoaded()) continue;
+			if (!Visible(frustum, pr.cullC, pr.cullR)) continue;
+			if ((dbgSkip & 1) || ((dbgSkip & 64) && pr.id >= 16) || pr.id == dbgSkipId) continue;
+			if (quality == 2 && ((pr.id >= 16 && fabsf(pr.pos.x) > 27.0f) || glm::length(glm::vec2(pr.pos.x - camPos.x, pr.pos.z - camPos.z)) > 95.0f)) continue;
 			glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(pr.matrix));
 			pr.model->RenderModel(uniformColor);   // color del material del glb
 		}
@@ -1736,6 +2012,7 @@ int main(int argc, char** argv)
 			for (int ci = 0; ci < CART_COUNT; ci++) {
 				float heading;
 				glm::vec3 cp = CartPath(cartDist - ci * CART_GAP, heading);
+				if (!Visible(frustum, cp + glm::vec3(0.0f, 2.5f, 0.0f), 6.0f) || (dbgSkip & 16)) continue;
 				glm::mat4 base = glm::translate(glm::mat4(1.0f), cp);
 				base = glm::rotate(base, glm::radians(heading), glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -1765,6 +2042,7 @@ int main(int argc, char** argv)
 
 		// Musico de taiko: jerarquia cuerpo -> brazo -> antebrazo -> mano -> baqueta
 		for (int ti = 0; ti < TAIKO_COUNT && taikoModel[0]; ti++) {
+			if (!Visible(frustum, TAIKO_POS[ti] + glm::vec3(0.0f, 1.0f, 0.0f), 2.2f) || (dbgSkip & 8)) continue;
 			glm::mat4 base = glm::translate(glm::mat4(1.0f), TAIKO_POS[ti]);
 			base = glm::rotate(base, glm::radians(TAIKO_YAW), glm::vec3(0.0f, 1.0f, 0.0f));
 			base = glm::scale(base, glm::vec3(TAIKO_SCALE));
@@ -1905,21 +2183,54 @@ int main(int argc, char** argv)
 			glEnable(GL_CULL_FACE);
 		}
 
-		// Duenos del puesto: figuras fusionadas (sin esqueleto) con una animacion de reposo: balanceo, respiracion
-		for (const Owner& o : owners) {
+		// Duenos del puesto. Los dos de la pileta son jerarquicos (base -> torso -> cabeza / abanico): reverencia de bienvenida cada 9 s,
+		// respiracion, cabeza que mira a un lado y a otro y el abanico moviendose. El resto de vendedores usa la figura entera con balanceo.
+		for (size_t oi = 0; oi < owners.size(); oi++) {
+			const Owner& o = owners[oi];
 			if (!o.model) continue;
-			float sway = 5.0f * sinf(0.7f * t + o.phase);          // grados
+			if (!Visible(frustum, glm::vec3(o.x, 0.9f, o.z), 1.8f)) continue;
+			if (dbgSkip & 2) continue;
+			const NpcRig* rg = (oi < 2 && npcRigs[oi].base) ? &npcRigs[oi] : nullptr;
+			float sway = (rg ? 0.0f : 5.0f) * sinf(0.7f * t + o.phase);          // grados
 			float bob  = 0.008f * sinf(1.4f * t + o.phase);
 			float br   = 1.0f + 0.006f * sinf(1.4f * t + o.phase);  // respiracion
 			glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(o.x, bob, o.z));
 			m = glm::rotate(m, glm::radians(o.yaw + sway), glm::vec3(0.0f, 1.0f, 0.0f));
 			m = glm::scale(m, glm::vec3(o.scale * br));
-			m = glm::translate(m, glm::vec3(-o.center.x, -o.minY, -o.center.z));
 			glDisable(GL_CULL_FACE);
 			setColor(1.0f, 1.0f, 1.0f);
 			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
-			glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
-			o.model->RenderModel(uniformColor);
+			if (!rg) {
+				m = glm::translate(m, glm::vec3(-o.center.x, -o.minY, -o.center.z));
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+				o.model->RenderModel(uniformColor);
+			} else {
+				const glm::vec3 X(1.0f, 0.0f, 0.0f), Y(0.0f, 1.0f, 0.0f), Zx(0.0f, 0.0f, 1.0f);
+				// reverencia: sube y baja suave durante 1.8 s de cada 9 s (sin^2)
+				float u = fmodf(t / 9.0f + o.phase * 0.11f, 1.0f), bw = (u < 0.2f) ? sinf(u / 0.2f * PI_F) : 0.0f;
+				bw *= bw;
+				float breathe = 1.2f * sinf(1.4f * t + o.phase);
+				glm::mat4 mt = glm::translate(m, rg->pTorso);
+				mt = glm::rotate(mt, glm::radians(rg->bowDeg * bw + breathe), X);                    // inclinacion hacia delante
+				mt = glm::rotate(mt, glm::radians(1.6f * sinf(0.7f * t + o.phase)), Zx);             // balanceo lateral del torso
+				glm::mat4 mh = glm::translate(mt, rg->pHead - rg->pTorso);
+				mh = glm::rotate(mh, glm::radians(rg->headYawDeg * sinf(0.5f * t + o.phase * 1.7f)), Y);          // mira a un lado y al otro
+				mh = glm::rotate(mh, glm::radians(-0.6f * rg->bowDeg * bw + 3.0f * sinf(0.9f * t + o.phase)), X);   // asiente y compensa la reverencia
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(m));
+				rg->base->RenderModel(uniformColor);
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(mt));
+				rg->torso->RenderModel(uniformColor);
+				glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(mh));
+				rg->head->RenderModel(uniformColor);
+				if (rg->fan) {                                                                       // abanico: sube y baja con las manos y gira la muneca
+					float w = 2.0f * PI_F * 1.4f * t + o.phase;
+					glm::mat4 mf = glm::translate(mt, rg->pFan - rg->pTorso);
+					mf = glm::rotate(mf, glm::radians(rg->fanDeg * (14.0f * sinf(w)) * (1.0f - 0.7f * bw)), X);
+					mf = glm::rotate(mf, glm::radians(rg->fanDeg * (11.0f * sinf(w + 1.3f))), Zx);
+					glUniformMatrix4fv(uniformModel, 1, GL_FALSE, glm::value_ptr(mf));
+					rg->fan->RenderModel(uniformColor);
+				}
+			}
 			glEnable(GL_CULL_FACE);
 		}
 		plainTexture.UseTexture();
@@ -1930,6 +2241,7 @@ int main(int argc, char** argv)
 			setColor(1.0f, 1.0f, 1.0f);
 			Material_opaco.UseMaterial(uniformSpecularIntensity, uniformShininess);
 			for (const Walker& w : walkers) {
+				if (dbgSkip & 4) break;
 				const WalkerType& wt = walkerTypes[w.type];
 				if (!wt.model) continue;
 				glm::vec2 tan;
@@ -1976,6 +2288,7 @@ int main(int argc, char** argv)
 
 		// Faroles: cuerda (pendulo) + tapas oscuras (iluminadas) y cuerpo emisivo (noLighting)
 		for (const Lantern& l : lanterns) {
+			if (dbgSkip & 32) break;
 			glm::mat4 pivot = LanternPivotMatrix(l, t);
 			float flick = LanternFlicker(l, t), sc = l.scale;
 			const float cordL = LANTERN_CORD_L * sc, bodyH = LANTERN_BODY_H * sc, bodyR = LANTERN_BODY_R * sc;
@@ -1993,14 +2306,17 @@ int main(int argc, char** argv)
 			glUniform1i(uniformNoLighting, 0);
 		}
 
-		// Carta de informacion flotante: cartel de frente a la camara sobre el objeto
-		if (infoOpen >= 0 && cardOK[infoOpen]) {
+		// Carta de informacion flotante: cartel de frente a la camara, adelantado hacia ella para no quedar dentro del objeto
+		if (infoOpen >= 0 && cardPageOK[infoPageBase[infoOpen] + infoPage]) {
 			const InfoPoint& ip = infoPoints[infoOpen];
-			Texture& ct = cardTex[infoOpen];
-			float aspect = (ct.GetWidth() > 0) ? (float)ct.GetHeight() / ct.GetWidth() : 1.33f;
+			Texture& ct = cardPages[infoPageBase[infoOpen] + infoPage];
+			float aspect = (ct.GetWidth() > 0) ? (float)ct.GetHeight() / ct.GetWidth() : 0.56f;
 			float cw = ip.cardW, ch = cw * aspect;
-			float yaw = atan2f(camPos.x - infoOpenPos.x, camPos.z - infoOpenPos.z);
-			glm::mat4 m = glm::translate(glm::mat4(1.0f), infoOpenPos + glm::vec3(0.0f, ip.cardY + 0.06f * sinf(1.6f * t), 0.0f));
+			glm::vec2 toCam(camPos.x - infoOpenPos.x, camPos.z - infoOpenPos.z);
+			float dl = glm::length(toCam); if (dl > 0.001f) toCam /= dl;
+			float yaw = atan2f(toCam.x, toCam.y);
+			glm::vec3 cpos = infoOpenPos + glm::vec3(toCam.x * ip.cardFwd, ip.cardY + 0.04f * sinf(1.6f * t), toCam.y * ip.cardFwd);
+			glm::mat4 m = glm::translate(glm::mat4(1.0f), cpos);
 			m = glm::rotate(m, yaw, glm::vec3(0.0f, 1.0f, 0.0f));
 			m = glm::scale(m, glm::vec3(cw, ch, 1.0f));
 			m = glm::translate(m, glm::vec3(-0.5f, -0.5f, 0.0f));
@@ -2008,7 +2324,7 @@ int main(int argc, char** argv)
 			glDisable(GL_CULL_FACE);
 			glEnable(GL_BLEND);
 			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-			glUniform1f(uniformAlpha, glm::min(1.0f, infoT / 0.25f));   // aparece con un fundido de 0.25 s
+			glUniform1f(uniformAlpha, glm::min(1.0f, infoT / 0.2f));   // aparece con un fundido de 0.2 s
 			ct.UseTexture();
 			setColor(1.0f, 1.0f, 1.0f);
 			drawMesh(MESH_QUAD, m);
@@ -2016,6 +2332,41 @@ int main(int argc, char** argv)
 			glDisable(GL_BLEND);
 			glEnable(GL_CULL_FACE);
 			glUniform1i(uniformNoLighting, 0);
+			plainTexture.UseTexture();
+		}
+
+		// Fuegos artificiales: sprites aditivos de cara a la camara, sin niebla ni escritura de profundidad
+		if (fwSpriteOK && !sparks.empty()) {
+			glm::mat4 vw = camera.calculateViewMatrix();
+			glm::vec3 right(vw[0][0], vw[1][0], vw[2][0]), up(vw[0][1], vw[1][1], vw[2][1]), fwd(vw[0][2], vw[1][2], vw[2][2]);
+			glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), 0.0f);
+			glUniform1i(uniformNoLighting, 1);
+			glDisable(GL_CULL_FACE);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+			glDepthMask(GL_FALSE);
+			fwSprite.UseTexture();
+			for (const Spark& sp : sparks) {
+				float u = sp.age / sp.life;
+				float fade = powf(1.0f - u, 1.4f) * (0.75f + 0.25f * sinf(sp.age * 38.0f + sp.p.x));       // se apaga y titila
+				glm::vec3 c = glm::mix(sp.col, glm::vec3(1.0f), glm::max(0.0f, 0.5f - u * 3.0f));         // al inicio, blanco incandescente
+				c = glm::mix(c, glm::vec3(0.9f, 0.35f, 0.12f), glm::smoothstep(0.55f, 1.0f, u) * 0.7f);   // al final, brasa
+				setColor(c.r, c.g, c.b);
+				glUniform1f(uniformAlpha, fade);
+				float sz = sp.size * (1.0f + 1.2f * (1.0f - u) * (sp.age < 0.12f ? 1.0f : 0.0f)) * 1.4f;
+				glm::mat4 m(1.0f);
+				m[0] = glm::vec4(right * sz, 0.0f);
+				m[1] = glm::vec4(up * sz, 0.0f);
+				m[2] = glm::vec4(fwd, 0.0f);
+				m[3] = glm::vec4(sp.p - (right + up) * (0.5f * sz), 1.0f);
+				drawMesh(MESH_QUAD, m);
+			}
+			glUniform1f(uniformAlpha, 1.0f);
+			glDepthMask(GL_TRUE);
+			glDisable(GL_BLEND);
+			glEnable(GL_CULL_FACE);
+			glUniform1i(uniformNoLighting, 0);
+			glUniform1f(shaderList[0].GetUniformLocation("fogDensity"), fogDensityOverride >= 0.0f ? fogDensityOverride : FOG_DENSITY);
 			plainTexture.UseTexture();
 		}
 
@@ -2087,7 +2438,9 @@ int main(int argc, char** argv)
 			bool nearPool = glm::length(glm::vec2(camPos.x - POOL_C.x, camPos.z - POOL_C.z)) < GAME_NEAR_R;
 			bool showE = uiOK && gameState == GS_IDLE && infoOpen < 0 && (nearPool || infoNear >= 0);
 			bool showGame = uiOK && (gameState == GS_PLAY || gameState == GS_RESULT);
-			if (showE || showGame) {
+			bool showNav = uiNavOK && gameState == GS_IDLE && infoOpen >= 0;
+			bool showCtrl = uiCtrlOK && controlsOn && gameState == GS_IDLE;
+			if (showE || showGame || showNav || showCtrl) {
 				float W = mainWindow.getBufferWidth(), H = mainWindow.getBufferHeight();
 				glm::mat4 ortho = glm::ortho(0.0f, W, 0.0f, H, -1.0f, 1.0f);
 				glm::mat4 ident(1.0f);
@@ -2123,6 +2476,8 @@ int main(int argc, char** argv)
 					}
 				};
 
+				if (showCtrl) img(uiCtrl, mg, mg, 460.0f * k * 0.74f, 364.0f * k * 0.74f, 0.92f);               // abajo a la izquierda
+				if (showNav) img(uiNav, (W - 640.0f * k) * 0.5f, mg, 640.0f * k, 120.0f * k, 1.0f);          // abajo al centro (con la carta abierta)
 				if (showE) img(uiAviso, (W - 420.0f * k) * 0.5f, mg, 420.0f * k, 140.0f * k, 1.0f);       // abajo al centro
 				if (showGame) {
 					float pw = 360.0f * k, ph = 140.0f * k;
@@ -2169,8 +2524,18 @@ int main(int argc, char** argv)
 			if (view >= N) mainWindow.setShouldClose(true);
 		}
 
+		if (fireShotDir) {
+			if (fsFrame >= 40 && fsFrame % 25 == 0 && fsFrame <= 190) {
+				char path[512]; snprintf(path, sizeof(path), "%s/fire%d.tga", fireShotDir, fsFrame);
+				SaveScreenshotTGA(path);
+			}
+			static float fsT0 = 0.0f;
+			if (fsFrame == 40) fsT0 = (float)glfwGetTime();
+			if (fsFrame == 190) printf("FPS_PRUEBA %.1f\n", 150.0f / ((float)glfwGetTime() - fsT0));
+			if (fsFrame > 190) mainWindow.setShouldClose(true);
+		}
 		if (cardShotDir) {
-			if (csFrame == 60) printf("CARTA: infoOpen=%d infoNear=%d infoT=%.2f cardOK=%d pos=(%.1f,%.1f,%.1f)\n", infoOpen, infoNear, infoT, infoOpen >= 0 ? (int)cardOK[infoOpen] : -1, infoOpenPos.x, infoOpenPos.y, infoOpenPos.z);
+			if (csFrame == 60) printf("CARTA: infoOpen=%d infoNear=%d infoT=%.2f cardOK=%d pos=(%.1f,%.1f,%.1f)\n", infoOpen, infoNear, infoT, infoOpen >= 0 ? (int)cardPageOK[infoPageBase[infoOpen] + infoPage] : -1, infoOpenPos.x, infoOpenPos.y, infoOpenPos.z);
 			if (csFrame == 20 || csFrame == 60) {
 				char path[512];
 				snprintf(path, sizeof(path), "%s/card%d.tga", cardShotDir, csFrame == 20 ? 0 : 1);
@@ -2202,6 +2567,7 @@ int main(int argc, char** argv)
 
 	if (taikoHitLoaded) ma_sound_uninit(&taikoHit);
 	if (bgmLoaded) ma_sound_uninit(&bgm);
+	if (taikoTrackLoaded) ma_sound_uninit(&taikoTrack);
 	if (audioReady) ma_engine_uninit(&audioEngine);
 
 	return 0;

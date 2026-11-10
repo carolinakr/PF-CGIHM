@@ -9,6 +9,8 @@
 #include "Mesh.h"
 #include "Texture.h"
 
+extern bool gUseOptimizedModels;
+
 class Model
 {
 public:
