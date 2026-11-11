@@ -7,14 +7,15 @@ Mesh::Mesh()
 	IBO = 0;
 	indexCount = 0;
 }
-
+// Genera y configura los buffers de memoria en la GPU para almacenar geometría, coordenadas de textura y normales
 void Mesh::CreateMesh(GLfloat *vertices, unsigned int *indices, unsigned int numOfVertices, unsigned int numOfIndices)
 {
 	indexCount = numOfIndices;
-
+	// Genera y enlaza el Vertex Array Object para almacenar el estado de los atributos de vértices
 	glGenVertexArrays(1, &VAO);
 	glBindVertexArray(VAO);
 
+	// Genera y configura el Index Buffer Object para el renderizado mediante índices
 	glGenBuffers(1, &IBO);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices[0]) * numOfIndices, indices, GL_STATIC_DRAW);
@@ -37,7 +38,7 @@ void Mesh::CreateMesh(GLfloat *vertices, unsigned int *indices, unsigned int num
 
 	glBindVertexArray(0);
 }
-
+// Enlaza la malla y ejecuta Draw Call en el pipeline gráfico
 void Mesh::RenderMesh()
 {
 	glBindVertexArray(VAO);
@@ -46,7 +47,7 @@ void Mesh::RenderMesh()
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 	glBindVertexArray(0);
 }
-
+// Libera los recursos y memoria de video asignados en la GPU para la malla
 void Mesh::ClearMesh()
 {
 	if (IBO != 0)

@@ -12,10 +12,11 @@ bool gUseOptimizedModels = true;
 Model::Model()
 {
 }
-
+// Carga el archivo del modelo 3D usando Assimp, aplica optimizaciones de malla y procesa la jerarquía de nodos
 void Model::LoadModel(const std::string & originalName, float cutBelowYArg, bool keepMeshes)
 {
 	std::string fileName = originalName;
+	// Intenta usar la versión optimizada del modelo GLB dentro de la carpeta si la bandera está activa
 	if (gUseOptimizedModels) {
 		size_t sp = originalName.find_last_of("/\\");
 		std::string opt = std::string("Models/Opt/") + ((sp != std::string::npos) ? originalName.substr(sp + 1) : originalName);
@@ -24,6 +25,7 @@ void Model::LoadModel(const std::string & originalName, float cutBelowYArg, bool
 	}
 	cutBelowY = cutBelowYArg;
 	Assimp::Importer importer;
+	// Carga la escena con Assimp y aplica post-procesos (triangulación, normales suaves, unión de vértices idénticos)
 	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | (keepMeshes ? 0u : (unsigned int)aiProcess_PreTransformVertices));
 	if (!scene)
 	{
@@ -32,10 +34,11 @@ void Model::LoadModel(const std::string & originalName, float cutBelowYArg, bool
 	}
 	size_t slashPos = fileName.find_last_of("/\\");
 	modelDir = (slashPos != std::string::npos) ? fileName.substr(0, slashPos + 1) : "";
+	// Carga los nodos de la jerarquía de la escena y sus materiales
 	LoadNode(scene->mRootNode, scene);
 	LoadMaterials(scene);
 }
-
+// Libera la memoria dinamica utilizada por las mallas y texturas
 void Model::ClearModel()
 {
 	for (unsigned int i = 0; i < MeshList.size(); i++)
@@ -58,20 +61,22 @@ void Model::ClearModel()
 	}
 
 }
-
+// Dibuja un rango específico de sub-mallas del modelo aplicando sus respectivas texturas y colores
 void Model::RenderMeshRange(unsigned int first, unsigned int count, GLuint colorLocation)
 {
 	for (unsigned int i = first; i < first + count && i < MeshList.size(); i++)
 	{
 		unsigned int materialIndex = meshTotex[i];
+		// Asigna y activa la textura asociada a la malla actual
 		if (materialIndex < TextureList.size() && TextureList[materialIndex])
 			TextureList[materialIndex]->UseTexture();
+		// Envía el color base del material al shader uniforme
 		if (colorLocation != 0 && materialIndex < materialColors.size())
 			glUniform3fv(colorLocation, 1, glm::value_ptr(materialColors[materialIndex]));
 		MeshList[i]->RenderMesh();
 	}
 }
-
+// Dibuja la totalidad de las sub-mallas que componen el modelo 3D
 void Model::RenderModel(GLuint colorLocation)
 {
 	for (unsigned int i = 0; i < MeshList.size(); i++)
@@ -93,7 +98,7 @@ void Model::RenderModel(GLuint colorLocation)
 Model::~Model()
 {
 }
-
+// Recorre recursivamente la estructura de nodos de Assimp para procesar sus mallas asociadas
 void Model::LoadNode(aiNode * node, const aiScene * scene)
 {
 	for (unsigned int i = 0; i <node->mNumMeshes; i++)
@@ -105,7 +110,7 @@ void Model::LoadNode(aiNode * node, const aiScene * scene)
 		LoadNode(node->mChildren[i], scene);
 	}
 }
-
+// Extrae vértices, coordenadas UV, normales e índices de una aiMesh e instancia un objeto Mesh de OpenGL
 void Model::LoadMesh(aiMesh * mesh, const aiScene * scene)
 {
 
@@ -127,6 +132,7 @@ void Model::LoadMesh(aiMesh * mesh, const aiScene * scene)
 		
 		vertices.insert(vertices.end(), { -mesh->mNormals[i].x,-mesh->mNormals[i].y ,-mesh->mNormals[i].z });
 	}
+	// Extrae la lista de índices de las caras triangulares y recorta elementos por debajo del plano cutBelowY
 	for (unsigned int i = 0; i < mesh->mNumFaces; i++)
 	{
 		aiFace face = mesh->mFaces[i];
@@ -150,7 +156,7 @@ void Model::LoadMesh(aiMesh * mesh, const aiScene * scene)
 	MeshList.push_back(newMesh);
 	meshTotex.push_back(mesh->mMaterialIndex);
 }
-
+// Procesa y carga los materiales y texturas asociadas
 void Model::LoadMaterials(const aiScene * scene)
 {
 	std::unordered_map<std::string, Texture*> loadedTextures;
