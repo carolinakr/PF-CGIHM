@@ -141,6 +141,7 @@ vec4 CalcSpotLights()
 void main()
 {
 	vec4 texColor = texture(theTexture, TexCoord);
+	if (texColor.a < 0.08) discard;   // recorte de hojas y bordes con transparencia (los arboles usan tarjetas con alfa)
 	if (noLighting == 1) {
 		color = vec4(texColor.rgb * vColor.rgb, texColor.a * vColor.a);
 	} else {
@@ -149,6 +150,8 @@ void main()
 		finalcolor += CalcSpotLights();
 		color = texColor * vColor * finalcolor;
 	}
+
+	color.a = texColor.a * vColor.a;   // la transparencia (agua) no debe inflarse con la suma de luces
 
 	// niebla exponencial (fogDensity = 0 la desactiva)
 	float fogFactor = exp(-fogDensity * length(eyePosition - FragPos));

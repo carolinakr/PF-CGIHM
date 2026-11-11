@@ -9,6 +9,8 @@
 #include "Mesh.h"
 #include "Texture.h"
 
+extern bool gUseOptimizedModels;
+
 class Model
 {
 public:
@@ -16,7 +18,11 @@ public:
 
 	// cutBelowY: descarta los triangulos que quedan ENTEROS por debajo de esa altura (en unidades del modelo).
 	// Sirve para quitar bases/losas negras que traen algunos .glb.
-	void LoadModel(const std::string& fileName, float cutBelowY = -1e30f);
+	// keepMeshes = true: no fusiona las mallas del archivo (para secuencias de cuadros horneados con tools/bake_skinned_glb.py)
+	void LoadModel(const std::string& fileName, float cutBelowY = -1e30f, bool keepMeshes = false);
+	// Dibuja solo las mallas [first, first + count): un cuadro de la secuencia
+	void RenderMeshRange(unsigned int first, unsigned int count, GLuint colorLocation = 0);
+	unsigned int GetMeshCount() const { return (unsigned int)MeshList.size(); }
 	void RenderModel(GLuint colorLocation = 0);
 	void ClearModel();
 

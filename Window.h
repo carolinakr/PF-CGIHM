@@ -21,6 +21,15 @@ public:
 		return  glfwWindowShouldClose(mainWindow);}
 	void setShouldClose(bool v) { glfwSetWindowShouldClose(mainWindow, v ? GLFW_TRUE : GLFW_FALSE); }
 	bool* getsKeys() { return keys; }
+	// Para el minijuego: cursor visible, posicion del mouse y boton izquierdo
+	void setCursorVisible(bool v) {
+		glfwSetInputMode(mainWindow, GLFW_CURSOR, v ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+		if (!v) { mouseFirstMoved = true; xChange = 0.0f; yChange = 0.0f; }
+	}
+	void getCursor(double* x, double* y) { glfwGetCursorPos(mainWindow, x, y); }
+	void getWindowSize(int* w, int* h) { glfwGetWindowSize(mainWindow, w, h); }
+	bool mouseDown() { return glfwGetMouseButton(mainWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS; }
+	bool escapeCloses = true;   // false durante el juego: ESC solo sale del juego
 	void swapBuffers() { return glfwSwapBuffers(mainWindow); }
 	
 	~Window();

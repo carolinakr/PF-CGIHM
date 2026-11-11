@@ -9,7 +9,7 @@ Requiere: pip install OpenEXR numpy pillow
 Notas de convencion:
  - El centro de la imagen equirectangular queda mirando hacia -Z (la calle).
  - skybox.vert hace TexCoords = -pos, asi que el cubemap guarda sky(-dir); aqui se compensa.
- - Nombres de cara (orden GL +X -X -Y +Y +Z -Z): rt lf dn up bk ft.
+ - Nombres de cara: rt=+X lf=-X up=+Y dn=-Y bk=+Z ft=-Z. Ojo: el orden de INDICES en OpenGL es +X -X +Y -Y +Z -Z (rt lf up dn bk ft).
 """
 import sys
 import numpy as np

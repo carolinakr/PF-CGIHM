@@ -4,15 +4,27 @@
 #include <gtc\type_ptr.hpp>
 
 
+#include <stdio.h>
+
+// Si existe Models/Opt/<mismo nombre>.glb (version con menos triangulos, ver tools/decimate_glb.py) se usa esa; --hq la desactiva.
+bool gUseOptimizedModels = true;
+
 Model::Model()
 {
 }
 
-void Model::LoadModel(const std::string & fileName, float cutBelowYArg)
+void Model::LoadModel(const std::string & originalName, float cutBelowYArg, bool keepMeshes)
 {
+	std::string fileName = originalName;
+	if (gUseOptimizedModels) {
+		size_t sp = originalName.find_last_of("/\\");
+		std::string opt = std::string("Models/Opt/") + ((sp != std::string::npos) ? originalName.substr(sp + 1) : originalName);
+		FILE* tf = nullptr;
+		if (fopen_s(&tf, opt.c_str(), "rb") == 0 && tf) { fclose(tf); fileName = opt; }
+	}
 	cutBelowY = cutBelowYArg;
 	Assimp::Importer importer;
-	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | aiProcess_PreTransformVertices);
+	const aiScene *scene = importer.ReadFile(fileName, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices | (keepMeshes ? 0u : (unsigned int)aiProcess_PreTransformVertices));
 	if (!scene)
 	{
 		printf("Fall en cargar el modelo: %s \n", fileName.c_str());
@@ -45,6 +57,19 @@ void Model::ClearModel()
 		}
 	}
 
+}
+
+void Model::RenderMeshRange(unsigned int first, unsigned int count, GLuint colorLocation)
+{
+	for (unsigned int i = first; i < first + count && i < MeshList.size(); i++)
+	{
+		unsigned int materialIndex = meshTotex[i];
+		if (materialIndex < TextureList.size() && TextureList[materialIndex])
+			TextureList[materialIndex]->UseTexture();
+		if (colorLocation != 0 && materialIndex < materialColors.size())
+			glUniform3fv(colorLocation, 1, glm::value_ptr(materialColors[materialIndex]));
+		MeshList[i]->RenderMesh();
+	}
 }
 
 void Model::RenderModel(GLuint colorLocation)
