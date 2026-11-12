@@ -107,6 +107,7 @@ int MESH_QUAD     = -1; // quad vertical unitario [0,1] (flyers/billboards)
 // ============================================================
 
 // Deteccion de flanco de subida: true una sola vez por pulsacion
+// Detecta el momento en que una tecla pasa de estar liberada a presionada; evita repetir acciones mientras se mantiene pulsada.
 bool KeyPressedOnce(int key)
 {
 	static bool prev[1024] = { false };
@@ -118,6 +119,7 @@ bool KeyPressedOnce(int key)
 
 // Frustum de la camara: seis planos sacados de proyeccion * vista. Un objeto (esfera) fuera de la vista no se dibuja.
 struct Frustum { glm::vec4 pl[6]; };
+// Construye los seis planos del volumen de visión de la cámara a partir de la matriz de proyección por vista.
 Frustum MakeFrustum(const glm::mat4& vp)
 {
 	Frustum f;
@@ -127,6 +129,7 @@ Frustum MakeFrustum(const glm::mat4& vp)
 	for (auto& q : f.pl) q /= glm::length(glm::vec3(q));
 	return f;
 }
+// Comprueba si una esfera delimitadora está dentro del campo de visión; permite omitir objetos que no se ven.
 bool Visible(const Frustum& f, const glm::vec3& c, float r)
 {
 	for (const auto& q : f.pl) if (q.x * c.x + q.y * c.y + q.z * c.z + q.w < -r) return false;
@@ -135,6 +138,7 @@ bool Visible(const Frustum& f, const glm::vec3& c, float r)
 
 // Promedio de normales para sombreado suave (Phong).
 // vLength = floats por vertice (8: pos3 + uv2 + normal3), normalOffset = 5.
+// Calcula y promedia las normales de los vértices para conseguir un sombreado más suave en las mallas.
 void calcAverageNormals(unsigned int* indices, unsigned int indiceCount, GLfloat* vertices, unsigned int verticeCount,
 	unsigned int vLength, unsigned int normalOffset)
 {
@@ -164,6 +168,7 @@ void calcAverageNormals(unsigned int* indices, unsigned int indiceCount, GLfloat
 // Offset de UV para una hoja de sprites (spritesheet) de cols x rows.
 // Reemplaza la tabla if/else de los numeros: indice 0 = arriba-izquierda, avanza por filas.
 // Se manda al shader en el uniform "toffset" (el vertex shader hace TexCoord = tex + toffset).
+// Obtiene el desplazamiento UV de una celda de la hoja de sprites según su índice, número de columnas y filas.
 glm::vec2 SpriteSheetOffset(int index, int cols, int rows)
 {
 	return glm::vec2((index % cols) / (float)cols, -(index / cols) / (float)rows);
@@ -174,6 +179,7 @@ glm::vec2 SpriteSheetOffset(int index, int cols, int rows)
 // ============================================================
 
 // Cilindro: solo cuerpo lateral, radio 1, altura 1 (escalar con glm::scale)
+// Genera un cilindro procedural mediante segmentos alrededor de su eje y lo registra en la lista de mallas.
 int MakeCylinder(int sectors)
 {
 	std::vector<GLfloat> verts;
@@ -200,6 +206,7 @@ int MakeCylinder(int sectors)
 }
 
 // Caja unitaria [0,1]^3 con normales por cara
+// Construye una caja unitaria con vértices, coordenadas UV y normales independientes para cada cara.
 int MakeBox()
 {
 	GLfloat v[] = {
@@ -252,6 +259,7 @@ int MakeBox()
 
 // Agrega una caja unitaria centrada en el origen, transformada por M, a una malla en construccion.
 // Normales hacia adentro (convencion del shader), igual que MakeBox.
+// Añade una caja transformada a una malla existente; se utiliza para construir objetos compuestos como ruedas y aros.
 void AppendBox(std::vector<GLfloat>& verts, std::vector<unsigned int>& inds, const glm::mat4& M)
 {
 	static const glm::vec3 N[6] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
@@ -274,6 +282,7 @@ void AppendBox(std::vector<GLfloat>& verts, std::vector<unsigned int>& inds, con
 }
 
 // Rueda de madera de radio 1 con el eje a lo largo de X: llanta de 24 tramos, 12 radios y un cubo.
+// Construye una rueda de madera combinando segmentos para la llanta, radios y cubo central.
 int MakeWheel()
 {
 	std::vector<GLfloat> v;
@@ -310,6 +319,7 @@ int MakeWheel()
 }
 
 // Pared de una tina de duelas de madera: 'staves' cajas alrededor de un circulo (radio interior 'radius').
+// Genera una tina circular a partir de duelas o piezas de madera distribuidas alrededor de un círculo.
 int MakeTub(float radius, float height, int staves, float thick)
 {
 	std::vector<GLfloat> v;
@@ -331,6 +341,7 @@ int MakeTub(float radius, float height, int staves, float thick)
 }
 
 // Disco horizontal en y = 0 con 'rings' anillos (para que las ondas del shader se vean) y UV 0..1
+// Crea un disco horizontal dividido en anillos y sectores, útil para superficies como el agua de la pileta.
 int MakeDisc(float radius, int rings, int sectors)
 {
 	std::vector<GLfloat> v;
@@ -354,6 +365,7 @@ int MakeDisc(float radius, int rings, int sectors)
 }
 
 // Aro de radio 1 en el plano XZ hecho con 'segs' cajas (el grosor 'thick' esta en unidades de radio)
+// Construye un aro en el plano XZ utilizando pequeñas cajas distribuidas alrededor de una circunferencia.
 int MakeRing(int segs, float thick)
 {
 	std::vector<GLfloat> v;
@@ -373,6 +385,7 @@ int MakeRing(int segs, float thick)
 	return (int)meshList.size() - 1;
 }
 
+// Crea y registra las mallas procedurales que se reutilizan durante el armado y dibujo de la escena.
 void CreateObjects()
 {
 	MESH_CAJA     = MakeBox();
@@ -462,6 +475,7 @@ void CreateObjects()
 	}
 }
 
+// Carga los shaders principales y los almacena en la lista que utiliza el renderizado.
 void CreateShaders()
 {
 	Shader* shader1 = new Shader();
@@ -551,12 +565,14 @@ float moonAmbientOverride = -1.0f; // >= 0 reemplaza MOON_AMBIENT (capturas aere
 float fogDensityOverride = -1.0f; // >= 0 reemplaza FOG_DENSITY (usado por las capturas aereas)
 bool freeCamera = false; // tecla V: camara libre (sin limites de calle ni altura fija)
 
+// Aplica una de las posiciones de cámara predefinidas para recorrer la entrada, el centro o el fondo de la calle.
 void SetCameraPreset(const CamPreset& p)
 {
 	camera = Camera(p.pos, glm::vec3(0.0f, 1.0f, 0.0f), p.yaw, p.pitch, CAM_MOVE_SPEED, CAM_TURN_SPEED);
 }
 
 // Mantiene al usuario dentro de la calle y a la altura de los ojos
+// Limita el movimiento de la cámara a los límites de la calle y mantiene la altura de los ojos, salvo en modo libre.
 void ConstrainCamera()
 {
 	if (freeCamera) return;
@@ -608,6 +624,7 @@ const float LANTERN_SWING_W   = 1.6f;
 const glm::vec3 LANTERN_COLOR(1.0f, 0.62f, 0.30f);
 
 // Ruido de valor 1D suave en [-1, 1]
+// Genera un valor pseudoaleatorio determinista a partir de un entero; sirve como base para el ruido de las luces.
 static float Hash1D(int n)
 {
 	unsigned int x = (unsigned int)n;
@@ -615,6 +632,7 @@ static float Hash1D(int n)
 	x = x * (x * x * 15731u + 789221u) + 1376312589u;
 	return 1.0f - (float)(x & 0x7fffffffu) / 1073741824.0f;
 }
+// Suaviza la transición entre valores pseudoaleatorios para producir variaciones continuas de intensidad.
 float Noise1D(float x)
 {
 	int i = (int)floorf(x);
@@ -623,6 +641,7 @@ float Noise1D(float x)
 	return Hash1D(i) * (1.0f - f) + Hash1D(i + 1) * f;
 }
 
+// Distribuye los faroles en las cuerdas que cruzan la calle y asigna fases aleatorias reproducibles.
 void InitLanterns()
 {
 	std::mt19937 rng(14); // semilla fija: la misma calle en cada ejecucion
@@ -637,14 +656,17 @@ void InitLanterns()
 	}
 }
 
+// Calcula el ángulo de balanceo de un farol en función del tiempo y de su fase individual.
 float LanternSwing(const Lantern& l, float t) // grados
 {
 	return LANTERN_SWING_DEG * sinf(LANTERN_SWING_W * t + l.phase);
 }
+// Calcula una pequeña variación de intensidad para simular el parpadeo de la luz de cada farol.
 float LanternFlicker(const Lantern& l, float t)
 {
 	return 0.92f + 0.08f * Noise1D(t * 6.0f + l.phase * 10.0f);
 }
+// Construye la transformación de giro alrededor del punto del que cuelga el farol.
 glm::mat4 LanternPivotMatrix(const Lantern& l, float t) // T(anclaje) * R(theta)
 {
 	glm::mat4 m = glm::translate(glm::mat4(1.0f), l.anchor);
@@ -761,6 +783,7 @@ const glm::vec3& MarkerColor(int id) { return MARKER_COLORS[(id - 1) % 10]; }
 const char* M_MAPLE  = "Models/maple_tree.glb";
 const char* M_SAKURA = "Models/sakura_tree_01_-_low_poly_model.glb";
 const char* M_BUSH   = "Models/stylized_bush.glb";
+// Añade árboles y arbustos alrededor de la calle con posiciones pseudoaleatorias fijas para completar el entorno.
 void AddScenery()
 {
 	std::mt19937 rng(11);
@@ -798,6 +821,7 @@ void AddScenery()
 	for (Prop& pr : props) if (pr.id >= 16) pr.cutBelowY = -1e30f;
 }
 
+// Carga los modelos de la escena, reutiliza modelos repetidos y calcula sus escalas, posiciones y límites espaciales.
 void LoadProps()
 {
 	printf("\n=== MODELOS (numero de color sobre cada uno; tecla M = mostrar/ocultar) ===\n");
@@ -886,6 +910,7 @@ float cartWheel = 0.0f;   // angulo acumulado de las ruedas (grados)
 float CartLoopLength() { return 2.0f * (CART_Z_NEAR - CART_Z_FAR) + 2.0f * PI_F * CART_LANE; }
 
 // Posicion y rumbo (grados, 0 = mirando a -Z) sobre el circuito a la distancia s
+// Calcula la posición y orientación de un carro sobre su recorrido cerrado a partir de la distancia recorrida.
 glm::vec3 CartPath(float s, float& headingDeg)
 {
 	const float straight = CART_Z_NEAR - CART_Z_FAR, arc = PI_F * CART_LANE, L = CartLoopLength();
@@ -906,6 +931,7 @@ glm::vec3 CartPath(float s, float& headingDeg)
 	return glm::vec3(pos.x, 0.0f, pos.y);
 }
 
+// Carga el modelo del carro y prepara sus transformaciones para que pueda desplazarse y girar correctamente.
 void LoadCart()
 {
 	cartRig.model = new Model();
@@ -938,6 +964,7 @@ void LoadCart()
 		cartRig.width, hi.y - lo.y, cartRig.length, CartLoopLength());
 }
 
+// Actualiza el avance de los carros y el giro de sus ruedas usando el tiempo transcurrido entre cuadros.
 void UpdateCarts(float dt)
 {
 	if (!cartRig.model) return;
@@ -980,6 +1007,7 @@ float taikoAccum = 0.0f;
 int taikoPrevSeg = -1;
 ma_sound* taikoHitSound = nullptr;   // golpe de taiko (Audio/taiko_hit.wav, opcional)
 
+// Carga y prepara los modelos y recursos necesarios para la animación de los músicos de taiko.
 void LoadTaiko()
 {
 	for (int i = 0; i < 10; i++) {
@@ -1002,6 +1030,7 @@ void LoadTaiko()
 		{ 12, 9, 7, 10, 9, 7, 18 });   // suma 72 pasos = 1.2 s
 }
 
+// Actualiza el estado de la animación de los músicos y la sincronización de sus movimientos.
 void UpdateTaiko(float dt)
 {
 	if (!taikoModel[0]) return;
@@ -1076,6 +1105,7 @@ struct NpcRig {
 };
 NpcRig npcRigs[2];     // 0: kimono gris (Nagase), 1: kimono rojo (Toda) -> mismo orden que los dos primeros de `owners`
 
+// Prepara las estructuras y modelos de los personajes que participan en la escena.
 void LoadNpcRigs()
 {
 	auto ld = [&](const char* f) { Model* m = new Model(); m->LoadModel(f); if (!m->IsLoaded()) { printf("NO CARGO pieza: %s\n", f); delete m; return (Model*)nullptr; } return m; };
@@ -1098,6 +1128,7 @@ void LoadNpcRigs()
 	for (NpcRig& r : npcRigs) if (!r.base || !r.torso || !r.head) { r.base = nullptr; }   // sin piezas completas: se usa el modelo entero
 }
 
+// Carga y configura la pileta, los peces y los elementos necesarios para el minijuego de pesca.
 void LoadPool()
 {
 	fishModel = new Model();
@@ -1189,6 +1220,7 @@ glm::vec3 netPos = POOL_C;                   // (x, z) de la red sobre el agua
 float netY = POOL_WATER_Y + 0.12f, netSpeed = 0.0f;
 bool netDown = false;
 
+// Calcula la posición actual de un pez siguiendo su trayectoria paramétrica y, opcionalmente, su orientación.
 glm::vec3 FishPos(const Fish& f, float* yawOut)
 {
 	float x = f.A * sinf(f.a * f.ft + f.delta), z = f.B * sinf(f.b * f.ft);
@@ -1198,6 +1230,7 @@ glm::vec3 FishPos(const Fish& f, float* yawOut)
 }
 
 // Punto del plano del agua bajo el cursor (rayo desde la camara)
+// Convierte la posición del cursor en un punto del plano del agua mediante un rayo proyectado desde la cámara.
 glm::vec3 MouseOnWater(const glm::mat4& proj, const glm::mat4& view)
 {
 	double mx, my; int ww, wh;
@@ -1219,6 +1252,7 @@ void SetCamLerp(const CamPose& a, const CamPose& b, float k)
 	camera.setView(glm::mix(a.pos, b.pos, k), a.yaw + dy * k, glm::mix(a.pitch, b.pitch, k));
 }
 
+// Inicializa una nueva partida del minijuego y reinicia sus variables de estado.
 void StartGame()
 {
 	camSaved = { camera.getCameraPosition(), camera.getYaw(), camera.getPitch() };
@@ -1231,6 +1265,7 @@ void StartGame()
 	printf("\nJUEGO: mueve el mouse para llevar la red, mantén el clic izquierdo para bajarla. ESC sale.\n");
 }
 
+// Actualiza el movimiento de los peces y sus transiciones de comportamiento a lo largo del tiempo.
 void UpdateFish(float dt)
 {
 	for (Fish& f : fish) {
@@ -1249,6 +1284,7 @@ void UpdateFish(float dt)
 	}
 }
 
+// Gestiona la lógica del minijuego: interacción con la red, movimiento, captura de peces y resultados.
 void UpdateGame(float dt, const glm::mat4& proj, bool ePressed)
 {
 	UpdateFish(dt);
@@ -1358,6 +1394,7 @@ const float WALK_LANE = 4.3f, WALK_Z_FAR = -23.5f, WALK_Z_NEAR = 20.5f;
 
 // Circuito generico: recta izquierda (-Z), media vuelta, recta derecha (+Z), media vuelta. Devuelve (x, 0, z) y la tangente (x, z).
 float LoopLen(float lane, float zFar, float zNear) { return 2.0f * (zNear - zFar) + 2.0f * PI_F * lane; }
+// Calcula la posición y la tangente de un personaje que camina siguiendo un circuito cerrado.
 glm::vec3 LoopPos(float s, float lane, float zFar, float zNear, glm::vec2& tan)
 {
 	const float straight = zNear - zFar, arc = PI_F * lane, L = LoopLen(lane, zFar, zNear);
@@ -1370,6 +1407,7 @@ glm::vec3 LoopPos(float s, float lane, float zFar, float zNear, glm::vec2& tan)
 	return glm::vec3(pos.x, 0.0f, pos.y);
 }
 
+// Carga los modelos de los peatones y obtiene los datos necesarios para reproducir sus ciclos de caminata.
 void LoadWalkers()
 {
 	for (WalkerType& wt : walkerTypes) {
@@ -1391,6 +1429,7 @@ void LoadWalkers()
 
 // Faroles del templo: cuelgan de los bordes de sus aleros (coordenadas del modelo del templo, antes de escalarlo).
 // Alturas de los aleros medidas sobre la malla: 620, 1340 y 1940 de 3738; el frente del templo es +Z.
+// Agrega faroles decorativos alrededor de la zona del templo para reforzar la iluminación ambiental.
 void AddTempleLanterns()
 {
 	const Prop* tp = nullptr;
@@ -1443,6 +1482,7 @@ Texture uiTiempo, uiPuntos, uiAviso, uiInstr, uiResult, uiDigitos, uiNav, uiCtrl
 bool uiCtrlOK = false, controlsOn = true, msaaOn = true, qualityDirty = true;
 bool uiOK = false, uiNavOK = false;
 
+// Carga los recursos gráficos utilizados por los elementos de interfaz y paneles informativos.
 void LoadUI()
 {
 	uiTiempo  = Texture("Textures/UI/hud_tiempo.png");        bool a = uiTiempo.LoadTextureA();
@@ -1467,6 +1507,7 @@ void LoadUI()
 }
 
 // Punto de informacion mas cercano dentro de su radio; abre/cierra la carta con E (la pileta tiene prioridad: ahi E es el juego)
+// Actualiza la detección de puntos de interés cercanos y el estado de las tarjetas informativas.
 void UpdateInfo(float dt, bool ePressed, int navDir)
 {
 	glm::vec3 cp = camera.getCameraPosition();
@@ -1533,6 +1574,7 @@ const glm::vec3 FW_COLORS[] = {
 	{ 0.35f, 0.75f, 1.00f }, { 0.45f, 1.00f, 0.45f }, { 1.00f, 1.00f, 0.90f }, { 0.75f, 0.45f, 1.00f },
 };
 
+// Actualiza el lanzamiento y la evolución de los fuegos artificiales, incluyendo sus partículas.
 void UpdateFireworks(float dt)
 {
 	if (!fireworksOn) { shells.clear(); sparks.clear(); fwFlashAge = 99.0f; return; }
@@ -1609,6 +1651,7 @@ void UpdateFireworks(float dt)
 //  MAIN
 // ============================================================
 // Guarda el framebuffer actual como .tga (24 bits). Sirve para revisar la escena sin depender de capturas de pantalla.
+// Captura el contenido del framebuffer y lo guarda como una imagen TGA en la ruta indicada.
 void SaveScreenshotTGA(const char* path)
 {
 	int w = (int)mainWindow.getBufferWidth(), h = (int)mainWindow.getBufferHeight();
@@ -1680,6 +1723,7 @@ const CamPreset BEAUTY_VIEWS[] = {
 	{ glm::vec3( 1.0f,  3.3f,  24.0f),  -90.0f,   6.0f },   // 12 faroles de cerca
 };
 
+// Punto de entrada: inicializa ventana, OpenGL, recursos, modelos, audio y el ciclo principal de actualización y renderizado.
 int main(int argc, char** argv)
 {
 	const char* shotsDir = nullptr;
